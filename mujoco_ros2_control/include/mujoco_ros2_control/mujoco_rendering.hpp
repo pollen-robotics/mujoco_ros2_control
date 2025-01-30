@@ -45,6 +45,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;  // Add this line
   void capture_and_publish_image();                                  // Add this line
   std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> camera_publishers_;
+  std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> depth_publishers_;
   void capture_and_publish_cameras();
 
   GLFWwindow *window_;

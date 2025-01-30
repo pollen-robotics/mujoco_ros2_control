@@ -40,6 +40,11 @@ void MujocoRendering::init(
     auto pub = node_->create_publisher<sensor_msgs::msg::Image>(topic_name, 10);
     camera_publishers_.push_back(pub);
 
+    // same for depth
+    std::string depth_topic_name = "/mujoco_camera/" + cam_name + "/depth";
+    auto depth_pub = node_->create_publisher<sensor_msgs::msg::Image>(depth_topic_name, 10);
+    depth_publishers_.push_back(depth_pub);
+
     std::cout << "Created publisher for camera: " << cam_name << " -> Topic: " << topic_name
               << std::endl;
   }
@@ -292,6 +297,7 @@ void MujocoRendering::capture_and_publish_cameras()
 
   mjrRect viewport = {0, 0, 640, 480};
   std::vector<unsigned char> rgb(viewport.width * viewport.height * 3);
+  std::vector<float> depth(viewport.width * viewport.height);
 
   for (int i = 0; i < mj_model_->ncam; i++)
   {
@@ -396,7 +402,7 @@ void MujocoRendering::capture_and_publish_cameras()
     // Render from this camera
     mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, nullptr, &temp_cam, mjCAT_ALL, &mjv_scn_);
     mjr_render(viewport, &mjv_scn_, &mjr_con_);
-    mjr_readPixels(rgb.data(), nullptr, viewport, &mjr_con_);
+    mjr_readPixels(rgb.data(), depth.data(), viewport, &mjr_con_);
 
     // Convert to OpenCV image
     cv::Mat img(viewport.height, viewport.width, CV_8UC3, rgb.data());
@@ -416,6 +422,49 @@ void MujocoRendering::capture_and_publish_cameras()
 
     // Publish the camera image
     camera_publishers_[i]->publish(ros_img);
+
+    //////////////////////DEPTH
+
+    // Define depth range for visualization
+    const float depth_min = 0.0f;   // Closest point (pure white)
+    const float depth_max = 10.0f;  // Anything >=10m is black
+
+    // ✅ Compute Depth Image in Meters
+    cv::Mat depth_img(viewport.height, viewport.width, CV_32FC1);
+    for (int y = 0; y < viewport.height; y++)
+    {
+      for (int x = 0; x < viewport.width; x++)
+      {
+        int index = y * viewport.width + x;
+        float depth_val = depth[index];  // Raw MuJoCo inverse depth
+
+        // Convert inverse MuJoCo depth to real-world meters (Avoid divide by zero)
+        float real_depth = 1.0f / std::max(depth_val, 1e-6f);
+
+        // Clip to max visualization range (e.g., 10m)
+        depth_img.at<float>(y, x) = std::min(real_depth, 10.0f);
+      }
+    }
+
+    // ✅ Flip image vertically for correct orientation
+    cv::flip(depth_img, depth_img, 0);
+
+    // ✅ **Fix RViz Error: Ensure Correct Data Size in `ros_depth`**
+    sensor_msgs::msg::Image ros_depth;
+    ros_depth.header.stamp = node_->now();
+    ros_depth.header.frame_id = "mujoco_camera_" + std::to_string(i) + "_depth";
+    ros_depth.height = depth_img.rows;
+    ros_depth.width = depth_img.cols;
+    ros_depth.encoding = "32FC1";  // ✅ Correct for RViz real depth visualization
+    ros_depth.is_bigendian = false;
+    ros_depth.step = depth_img.cols * sizeof(float);           // ✅ Fix: Ensure correct `step` size
+    ros_depth.data.resize(ros_depth.step * ros_depth.height);  // ✅ Fix: Ensure correct total size
+    memcpy(
+      ros_depth.data.data(), depth_img.data,
+      ros_depth.step * ros_depth.height);  // ✅ Copy raw bytes correctly
+
+    // Publish real-world depth (in meters)
+    depth_publishers_[i]->publish(ros_depth);
   }
 }
 
