@@ -209,6 +209,60 @@ void MujocoRendering::capture_and_publish_image()
   image_pub_->publish(ros_img);
 }
 
+void MujocoRendering::capture_and_publish_cameras()
+{
+  mjrRect viewport = {0, 0, 640, 480};
+  std::vector<unsigned char> rgb(viewport.width * viewport.height * 3);
+
+  for (int i = 0; i < mj_model_->ncam; i++)
+  {
+    // Set up a temporary MuJoCo camera
+    mjvCamera temp_cam;
+    mjv_defaultCamera(&temp_cam);
+
+    // Get camera position
+    temp_cam.lookat[0] = mj_model_->cam_pos[3 * i];
+    temp_cam.lookat[1] = mj_model_->cam_pos[3 * i + 1];
+    temp_cam.lookat[2] = mj_model_->cam_pos[3 * i + 2];
+
+    // Extract the camera's orientation (forward vector) from cam_mat0
+    mjtNum forward_x = mj_model_->cam_mat0[9 * i + 6];
+    mjtNum forward_y = mj_model_->cam_mat0[9 * i + 7];
+    mjtNum forward_z = mj_model_->cam_mat0[9 * i + 8];
+
+    // Set camera distance (adjust as needed)
+    temp_cam.distance = 1.0;
+
+    // Compute the final look-at position by moving along the camera's forward vector
+    temp_cam.lookat[0] -= temp_cam.distance * forward_x;
+    temp_cam.lookat[1] -= temp_cam.distance * forward_y;
+    temp_cam.lookat[2] -= temp_cam.distance * forward_z;
+
+    // Render from this camera
+    mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, nullptr, &temp_cam, mjCAT_ALL, &mjv_scn_);
+    mjr_render(viewport, &mjv_scn_, &mjr_con_);
+    mjr_readPixels(rgb.data(), nullptr, viewport, &mjr_con_);
+
+    // Convert to OpenCV image
+    cv::Mat img(viewport.height, viewport.width, CV_8UC3, rgb.data());
+    cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+
+    // Convert to ROS2 Image message
+    sensor_msgs::msg::Image ros_img;
+    ros_img.header.stamp = node_->now();
+    ros_img.header.frame_id = "mujoco_camera_" + std::to_string(i);
+    ros_img.height = viewport.height;
+    ros_img.width = viewport.width;
+    ros_img.encoding = "bgr8";
+    ros_img.is_bigendian = false;
+    ros_img.step = 3 * viewport.width;
+    ros_img.data.assign(img.data, img.data + img.total() * img.elemSize());
+
+    // Publish the camera image
+    camera_publishers_[i]->publish(ros_img);
+  }
+}
+
 void MujocoRendering::update()
 {
   // Render the MuJoCo scene
@@ -220,7 +274,8 @@ void MujocoRendering::update()
   glfwPollEvents();
 
   // Publish camera image without embedding the camera view inside the MuJoCo scene
-  capture_and_publish_image();
+  // capture_and_publish_image();
+  capture_and_publish_cameras();
 }
 
 bool MujocoRendering::is_close_flag_raised() { return glfwWindowShouldClose(window_); }
