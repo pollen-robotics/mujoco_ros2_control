@@ -211,7 +211,7 @@ void MujocoRendering::capture_and_publish_image()
 
 void MujocoRendering::capture_and_publish_cameras()
 {
-  for (int i = 0; i < mj_model_->ncam; i++)
+  for (int i = 3; i < mj_model_->ncam; i++)
   {
     std::string cam_name = std::string(mj_model_->names + mj_model_->name_camadr[i]);
     std::cout << "Camera " << i << " Name: " << cam_name << std::endl;
@@ -271,12 +271,24 @@ void MujocoRendering::capture_and_publish_cameras()
     }
     std::cout << "]" << std::endl;
 
+    // Get the absolute position of the camera
+    mjtNum *cam_pos = mj_data_->xpos + 3 * mj_model_->cam_bodyid[i];
+
+    // Get the absolute orientation (quaternion)
+    mjtNum *cam_quat = mj_data_->xquat + 4 * mj_model_->cam_bodyid[i];
+
+    std::cout << "Camera " << i << " Position: [" << cam_pos[0] << ", " << cam_pos[1] << ", "
+              << cam_pos[2] << "]" << std::endl;
+
+    std::cout << "Camera " << i << " Orientation (Quat): [" << cam_quat[0] << ", " << cam_quat[1]
+              << ", " << cam_quat[2] << ", " << cam_quat[3] << "]" << std::endl;
+
     std::cout << "======================================" << std::endl;
   }
 
   // Force crash or exit after printing
-  std::cerr << "Debug print complete. Exiting program." << std::endl;
-  exit(1);
+  // std::cerr << "Debug print complete. Exiting program." << std::endl;
+  // exit(1);
 
   mjrRect viewport = {0, 0, 640, 480};
   std::vector<unsigned char> rgb(viewport.width * viewport.height * 3);
@@ -293,8 +305,8 @@ void MujocoRendering::capture_and_publish_cameras()
     temp_cam.lookat[2] = mj_model_->cam_pos[3 * i + 2];
 
     // print camera position
-    std::cout << "Camera position: " << temp_cam.lookat[0] << " " << temp_cam.lookat[1] << " "
-              << temp_cam.lookat[2] << std::endl;
+    // std::cout << "Camera position: " << temp_cam.lookat[0] << " " << temp_cam.lookat[1] << " "
+    //           << temp_cam.lookat[2] << std::endl;
 
     // Extract the camera's orientation (forward vector) from cam_mat0
     mjtNum forward_x = mj_model_->cam_mat0[9 * i + 6];
@@ -302,8 +314,8 @@ void MujocoRendering::capture_and_publish_cameras()
     mjtNum forward_z = mj_model_->cam_mat0[9 * i + 8];
 
     // print the forwards
-    std::cout << "Camera forward: " << forward_x << " " << forward_y << " " << forward_z
-              << std::endl;
+    // std::cout << "Camera forward: " << forward_x << " " << forward_y << " " << forward_z
+    //           << std::endl;
 
     // Set camera distance (adjust as needed)
     temp_cam.distance = 1.0;
@@ -316,6 +328,71 @@ void MujocoRendering::capture_and_publish_cameras()
     // temp_cam.lookat[1] -= temp_cam.distance ;
     // temp_cam.lookat[2] -= temp_cam.distance ;
 
+    // new
+    //
+
+    // // // // // // // // // // // // // // Get the absolute position of the camera
+    // // // // // // // // // // // // // mjtNum *cam_pos = mj_data_->xpos + 3 *
+    // mj_model_->cam_bodyid[i];
+
+    // // // // // // // // // // // // // // Get the absolute orientation (quaternion)
+    // // // // // // // // // // // // // mjtNum *cam_quat = mj_data_->xquat + 4 *
+    // mj_model_->cam_bodyid[i];
+    // // // // // // // // // // // // // // mjvCamera temp_cam;
+    // // // // // // // // // // // // // // mjv_defaultCamera(&temp_cam);
+
+    // // // // // // // // // // // // // // Set camera position in world frame
+    // // // // // // // // // // // // // temp_cam.pos[0] = cam_pos[0];
+    // // // // // // // // // // // // // temp_cam.pos[1] = cam_pos[1];
+    // // // // // // // // // // // // // temp_cam.pos[2] = cam_pos[2];
+
+    // // // // // // // // // // // // // // Compute forward direction (-Z in local frame rotated
+    // to world)
+    // // // // // // // // // // // // // mjtNum forward_local[3] = {0, 0, -1};  // MuJoCo's
+    // default camera direction
+    // // // // // // // // // // // // // mjtNum forward_world[3];
+    // // // // // // // // // // // // // mju_rotVecQuat(forward_world, forward_local, cam_quat);
+
+    // // // // // // // // // // // // // // Compute look-at position
+    // // // // // // // // // // // // // temp_cam.lookat[0] = cam_pos[0] + forward_world[0];
+    // // // // // // // // // // // // // temp_cam.lookat[1] = cam_pos[1] + forward_world[1];
+    // // // // // // // // // // // // // temp_cam.lookat[2] = cam_pos[2] + forward_world[2];
+
+    // // // // // // // // // // // // // // std::cout << "Camera " << i << " Position: [" <<
+    // cam_pos[0] << ", " << cam_pos[1] << ", "
+    // // // // // // // // // // // // // //           << cam_pos[2] << "]" << std::endl;
+
+    // // // // // // // // // // // // // // std::cout << "Camera " << i << " Look-at Position: ["
+    // << temp_cam.lookat[0] << ", "
+    // // // // // // // // // // // // // //           << temp_cam.lookat[1] << ", " <<
+    // temp_cam.lookat[2] << "]" << std::endl;
+
+    // renew
+
+    // Retrieve camera position
+    mjtNum *cam_pos = mj_model_->cam_pos + 3 * i;
+
+    // Compute camera "look-at" position using cam_mat0
+    mjtNum lookat[3] = {
+      cam_pos[0] + mj_model_->cam_mat0[9 * i + 6],  // X forward
+      cam_pos[1] + mj_model_->cam_mat0[9 * i + 7],  // Y forward
+      cam_pos[2] + mj_model_->cam_mat0[9 * i + 8]   // Z forward
+    };
+
+    // Set up a MuJoCo visualization camera
+    // mjvCamera temp_cam;
+    // mjv_defaultCamera(&temp_cam);
+
+    temp_cam.type = mjCAMERA_FIXED;  // Use the pre-defined MuJoCo camera
+    temp_cam.fixedcamid = i;         // Set camera ID
+    temp_cam.lookat[0] = lookat[0];
+    temp_cam.lookat[1] = lookat[1];
+    temp_cam.lookat[2] = lookat[2];
+    temp_cam.distance = 0.1;  // Ensure the camera is properly positioned
+    temp_cam.azimuth = 0;     // Align azimuth
+    temp_cam.elevation = 0;   // Align elevation
+
+    // renew
     // Render from this camera
     mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, nullptr, &temp_cam, mjCAT_ALL, &mjv_scn_);
     mjr_render(viewport, &mjv_scn_, &mjr_con_);
