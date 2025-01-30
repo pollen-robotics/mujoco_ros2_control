@@ -32,6 +32,20 @@ void MujocoRendering::init(
     mju_error("Could not initialize GLFW");
   }
 
+  for (int i = 0; i < mj_model_->ncam; i++)
+  {
+    std::string cam_name = std::string(mj_model_->names + mj_model_->name_camadr[i]);
+    std::string topic_name = "/mujoco_camera/" + cam_name + "/image_raw";
+
+    auto pub = node_->create_publisher<sensor_msgs::msg::Image>(topic_name, 10);
+    camera_publishers_.push_back(pub);
+
+    std::cout << "Created publisher for camera: " << cam_name << " -> Topic: " << topic_name
+              << std::endl;
+  }
+
+  std::cout << "Number of cameras: " << camera_publishers_.size() << std::endl;
+
   window_ = glfwCreateWindow(1200, 900, "MuJoCo Scene View", NULL, NULL);
   glfwMakeContextCurrent(window_);
   glfwSwapInterval(1);

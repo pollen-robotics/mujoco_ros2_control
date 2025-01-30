@@ -44,6 +44,8 @@ private:
   mjrContext mjr_con_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;  // Add this line
   void capture_and_publish_image();                                  // Add this line
+  std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> camera_publishers_;
+
   GLFWwindow *window_;
 
   bool button_left_;
