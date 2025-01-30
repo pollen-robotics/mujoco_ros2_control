@@ -1,178 +1,221 @@
 #include "mujoco_ros2_control/mujoco_rendering.hpp"
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/opencv.hpp>
+#include <sensor_msgs/msg/image.hpp>
 
 namespace mujoco_ros2_control
 {
-MujocoRendering* MujocoRendering::instance_ = nullptr;
+MujocoRendering *MujocoRendering::instance_ = nullptr;
 
-MujocoRendering* MujocoRendering::get_instance()
+MujocoRendering *MujocoRendering::get_instance()
 {
-  if(instance_ == nullptr)
+  if (instance_ == nullptr)
   {
     instance_ = new MujocoRendering();
   }
-
   return instance_;
 }
 
-MujocoRendering::MujocoRendering()
-  : mj_model_(nullptr), mj_data_(nullptr),
-    button_left_(false), button_middle_(false), button_right_(false),
-    lastx_(0.0), lasty_(0.0)
-{
-}
+MujocoRendering::MujocoRendering() : mj_model_(nullptr), mj_data_(nullptr) {}
 
-void MujocoRendering::init(rclcpp::Node::SharedPtr & node, mjModel* mujoco_model, mjData* mujoco_data)
+void MujocoRendering::init(
+  rclcpp::Node::SharedPtr &node, mjModel *mujoco_model, mjData *mujoco_data)
 {
   node_ = node;
   mj_model_ = mujoco_model;
   mj_data_ = mujoco_data;
+  image_pub_ = node_->create_publisher<sensor_msgs::msg::Image>("/mujoco_camera/image_raw", 10);
 
-  // init GLFW
-  if (!glfwInit()) {
+  // Initialize GLFW window for scene rendering
+  if (!glfwInit())
+  {
     mju_error("Could not initialize GLFW");
   }
 
-  // create window, make OpenGL context current, request v-sync
-  window_ = glfwCreateWindow(1200, 900, "Demo", NULL, NULL);
+  window_ = glfwCreateWindow(1200, 900, "MuJoCo Scene View", NULL, NULL);
   glfwMakeContextCurrent(window_);
   glfwSwapInterval(1);
 
-  // initialize visualization data structures
+  // Initialize MuJoCo visualization components
   mjv_defaultCamera(&mjv_cam_);
   mjv_defaultOption(&mjv_opt_);
   mjv_defaultScene(&mjv_scn_);
   mjr_defaultContext(&mjr_con_);
 
-  mjv_cam_.distance = 10.;
-
-  // create scene and context
   mjv_makeScene(mj_model_, &mjv_scn_, 2000);
   mjr_makeContext(mj_model_, &mjr_con_, mjFONTSCALE_150);
-
-  // install GLFW mouse and keyboard callbacks
+  // Install GLFW mouse and keyboard callbacks
   glfwSetKeyCallback(window_, &MujocoRendering::keyboard_callback);
   glfwSetCursorPosCallback(window_, &MujocoRendering::mouse_move_callback);
   glfwSetMouseButtonCallback(window_, &MujocoRendering::mouse_button_callback);
   glfwSetScrollCallback(window_, &MujocoRendering::scroll_callback);
 }
 
-bool MujocoRendering::is_close_flag_raised()
-{
-  return glfwWindowShouldClose(window_);
-}
-
-void MujocoRendering::update()
-{
-  // get framebuffer viewport
-  mjrRect viewport = {0, 0, 0, 0};
-  glfwGetFramebufferSize(window_, &viewport.width, &viewport.height);
-
-  // update scene and render
-  mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, NULL, &mjv_cam_, mjCAT_ALL, &mjv_scn_);
-  mjr_render(viewport, &mjv_scn_, &mjr_con_);
-
-  // swap OpenGL buffers (blocking call due to v-sync)
-  glfwSwapBuffers(window_);
-
-  // process pending GUI events, call GLFW callbacks
-  glfwPollEvents();
-}
-
-void MujocoRendering::close()
-{
-  //free visualization storage
-  mjv_freeScene(&mjv_scn_);
-  mjr_freeContext(&mjr_con_);
-
-  // terminate GLFW (crashes with Linux NVidia drivers)
-#if defined(__APPLE__) || defined(_WIN32)
-  glfwTerminate();
-#endif
-}
-
-void MujocoRendering::keyboard_callback(GLFWwindow* window, int key, int scancode, int act, int mods)
-{
-  get_instance()->keyboard_callback_impl(window, key, scancode, act, mods);
-}
-
-void MujocoRendering::mouse_button_callback(GLFWwindow* window, int button, int act, int mods)
+void MujocoRendering::mouse_button_callback(GLFWwindow *window, int button, int act, int mods)
 {
   get_instance()->mouse_button_callback_impl(window, button, act, mods);
 }
 
-void MujocoRendering::mouse_move_callback(GLFWwindow* window, double xpos, double ypos)
+void MujocoRendering::mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
 {
   get_instance()->mouse_move_callback_impl(window, xpos, ypos);
 }
 
-void MujocoRendering::scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
+void MujocoRendering::scroll_callback(GLFWwindow *window, double xoffset, double yoffset)
 {
   get_instance()->scroll_callback_impl(window, xoffset, yoffset);
 }
-
-void MujocoRendering::keyboard_callback_impl(GLFWwindow* window, int key, int scancode, int act, int mods)
+void MujocoRendering::keyboard_callback(
+  GLFWwindow *window, int key, int scancode, int act, int mods)
 {
-  // backspace: reset simulation
-  if (act==GLFW_PRESS && key==GLFW_KEY_BACKSPACE) {
+  get_instance()->keyboard_callback_impl(window, key, scancode, act, mods);
+}
+
+void MujocoRendering::keyboard_callback_impl(
+  GLFWwindow *window, int key, int scancode, int act, int mods)
+{
+  if (act == GLFW_PRESS && key == GLFW_KEY_BACKSPACE)
+  {
     mj_resetData(mj_model_, mj_data_);
     mj_forward(mj_model_, mj_data_);
   }
 }
-
-void MujocoRendering::mouse_button_callback_impl(GLFWwindow* window, int button, int act, int mods)
+void MujocoRendering::mouse_button_callback_impl(GLFWwindow *window, int button, int act, int mods)
 {
-  // update button state
-  button_left_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS);
-  button_middle_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE)==GLFW_PRESS);
-  button_right_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT)==GLFW_PRESS);
-
-  // update mouse position
+  button_left_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+  button_middle_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
+  button_right_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
   glfwGetCursorPos(window, &lastx_, &lasty_);
-}
 
-void MujocoRendering::mouse_move_callback_impl(GLFWwindow* window, double xpos, double ypos)
-{
-  // no buttons down: nothing to do
-  if (!button_left_ && !button_middle_ && !button_right_) {
-    return;
+  if (button_left_ && act == GLFW_PRESS)
+  {
+    // Get window size
+    int width, height;
+    glfwGetWindowSize(window_, &width, &height);
+    mjtNum aspectratio = (mjtNum)width / (mjtNum)height;
+
+    // Convert cursor position to normalized screen coordinates
+    mjtNum relx = lastx_ / (mjtNum)width;
+    mjtNum rely = 1.0 - lasty_ / (mjtNum)height;  // Invert y-axis
+
+    // Variables to store selection results
+    mjtNum selpos[3];
+    int geomid = -1, skinid = -1, bodyid = -1;
+
+    // Perform selection
+    mjv_select(
+      mj_model_, mj_data_, &mjv_opt_, aspectratio, relx, rely, &mjv_scn_, selpos, &geomid, &skinid,
+      &bodyid);
+
+    if (geomid >= 0 && bodyid > 0)  // Ensure it's a dynamic object
+    {
+      selected_body_ = bodyid;
+      selected_pos_[0] = selpos[0];
+      selected_pos_[1] = selpos[1];
+      selected_pos_[2] = selpos[2];
+    }
   }
 
-  // compute mouse displacement, save
+  if (button_left_ && act == GLFW_RELEASE)
+  {
+    selected_body_ = -1;
+  }
+}
+
+void MujocoRendering::mouse_move_callback_impl(GLFWwindow *window, double xpos, double ypos)
+{
+  if (!button_left_ && !button_middle_ && !button_right_) return;
+
   double dx = xpos - lastx_;
   double dy = ypos - lasty_;
   lastx_ = xpos;
   lasty_ = ypos;
 
-  // get current window size
   int width, height;
-  glfwGetWindowSize(window, &width, &height);
+  glfwGetWindowSize(window_, &width, &height);
+  bool mod_shift =
+    (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+     glfwGetKey(window_, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
 
-  // get shift key state
-  bool mod_shift = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT)==GLFW_PRESS ||
-                    glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT)==GLFW_PRESS);
+  if (selected_body_ >= 0)
+  {
+    // Move selected object by modifying qpos
+    mjtNum dpos[3] = {dx / width, -dy / height, 0};
 
-  // determine action based on mouse button
-  mjtMouse action;
-  if (button_right_)
-  {
-    action = mod_shift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V;
-  }
-  else if (button_left_)
-  {
-    action = mod_shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;
+    int qposadr = mj_model_->jnt_qposadr[mj_model_->body_jntadr[selected_body_]];
+    mj_data_->qpos[qposadr] += dpos[0];
+    mj_data_->qpos[qposadr + 1] += dpos[1];
+    mj_data_->qpos[qposadr + 2] += dpos[2];
+
+    mj_forward(mj_model_, mj_data_);
   }
   else
   {
-    action = mjMOUSE_ZOOM;
+    // Normal camera movement
+    mjtMouse action;
+    if (button_right_)
+      action = mod_shift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V;
+    else if (button_left_)
+      action = mod_shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;
+    else
+      action = mjMOUSE_ZOOM;
+
+    mjv_moveCamera(mj_model_, action, dx / height, dy / height, &mjv_scn_, &mjv_cam_);
   }
-
-  // move camera
-  mjv_moveCamera(mj_model_, action, dx/height, dy/height, &mjv_scn_, &mjv_cam_);
 }
 
-void MujocoRendering::scroll_callback_impl(GLFWwindow* window, double xoffset, double yoffset)
+void MujocoRendering::scroll_callback_impl(GLFWwindow *window, double xoffset, double yoffset)
 {
-  // emulate vertical mouse motion = 5% of window height
-  mjv_moveCamera(mj_model_, mjMOUSE_ZOOM, 0, -0.05*yoffset, &mjv_scn_, &mjv_cam_);
+  mjv_moveCamera(mj_model_, mjMOUSE_ZOOM, 0, -0.05 * yoffset, &mjv_scn_, &mjv_cam_);
 }
-} // namespace mujoco_ros2_control
+
+void MujocoRendering::capture_and_publish_image()
+{
+  if (!mj_model_ || !mj_data_) return;
+
+  mjrRect viewport = {0, 0, 640, 480};
+  std::vector<unsigned char> rgb(viewport.width * viewport.height * 3);
+
+  // Capture only the scene rendering, without an embedded camera view
+  mjr_readPixels(rgb.data(), nullptr, viewport, &mjr_con_);
+
+  cv::Mat img(viewport.height, viewport.width, CV_8UC3, rgb.data());
+  cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+
+  sensor_msgs::msg::Image ros_img;
+  ros_img.header.stamp = node_->now();
+  ros_img.header.frame_id = "mujoco_camera";
+  ros_img.height = viewport.height;
+  ros_img.width = viewport.width;
+  ros_img.encoding = "bgr8";
+  ros_img.is_bigendian = false;
+  ros_img.step = 3 * viewport.width;
+  ros_img.data.assign(img.data, img.data + img.total() * img.elemSize());
+
+  image_pub_->publish(ros_img);
+}
+
+void MujocoRendering::update()
+{
+  // Render the MuJoCo scene
+  mjrRect viewport = {0, 0, 0, 0};
+  glfwGetFramebufferSize(window_, &viewport.width, &viewport.height);
+  mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, nullptr, &mjv_cam_, mjCAT_ALL, &mjv_scn_);
+  mjr_render(viewport, &mjv_scn_, &mjr_con_);
+  glfwSwapBuffers(window_);
+  glfwPollEvents();
+
+  // Publish camera image without embedding the camera view inside the MuJoCo scene
+  capture_and_publish_image();
+}
+
+bool MujocoRendering::is_close_flag_raised() { return glfwWindowShouldClose(window_); }
+
+void MujocoRendering::close()
+{
+  mjv_freeScene(&mjv_scn_);
+  mjr_freeContext(&mjr_con_);
+  glfwDestroyWindow(window_);
+  glfwTerminate();
+}
+}  // namespace mujoco_ros2_control
