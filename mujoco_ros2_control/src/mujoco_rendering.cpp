@@ -225,6 +225,10 @@ void MujocoRendering::capture_and_publish_cameras()
     temp_cam.lookat[1] = mj_model_->cam_pos[3 * i + 1];
     temp_cam.lookat[2] = mj_model_->cam_pos[3 * i + 2];
 
+    // print camera position
+    std::cout << "Camera position: " << temp_cam.lookat[0] << " " << temp_cam.lookat[1] << " "
+              << temp_cam.lookat[2] << std::endl;
+
     // Extract the camera's orientation (forward vector) from cam_mat0
     mjtNum forward_x = mj_model_->cam_mat0[9 * i + 6];
     mjtNum forward_y = mj_model_->cam_mat0[9 * i + 7];
@@ -234,9 +238,12 @@ void MujocoRendering::capture_and_publish_cameras()
     temp_cam.distance = 1.0;
 
     // Compute the final look-at position by moving along the camera's forward vector
-    temp_cam.lookat[0] -= temp_cam.distance * forward_x;
-    temp_cam.lookat[1] -= temp_cam.distance * forward_y;
-    temp_cam.lookat[2] -= temp_cam.distance * forward_z;
+    // temp_cam.lookat[0] -= temp_cam.distance * forward_x;
+    // temp_cam.lookat[1] -= temp_cam.distance * forward_y;
+    // temp_cam.lookat[2] -= temp_cam.distance * forward_z;
+    // temp_cam.lookat[0] -= temp_cam.distance ;
+    // temp_cam.lookat[1] -= temp_cam.distance ;
+    // temp_cam.lookat[2] -= temp_cam.distance ;
 
     // Render from this camera
     mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, nullptr, &temp_cam, mjCAT_ALL, &mjv_scn_);
@@ -246,6 +253,7 @@ void MujocoRendering::capture_and_publish_cameras()
     // Convert to OpenCV image
     cv::Mat img(viewport.height, viewport.width, CV_8UC3, rgb.data());
     cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+    cv::flip(img, img, 0);  // Fix framebuffer flip
 
     // Convert to ROS2 Image message
     sensor_msgs::msg::Image ros_img;
