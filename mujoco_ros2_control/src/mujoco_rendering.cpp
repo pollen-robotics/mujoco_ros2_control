@@ -211,6 +211,73 @@ void MujocoRendering::capture_and_publish_image()
 
 void MujocoRendering::capture_and_publish_cameras()
 {
+  for (int i = 0; i < mj_model_->ncam; i++)
+  {
+    std::string cam_name = std::string(mj_model_->names + mj_model_->name_camadr[i]);
+    std::cout << "Camera " << i << " Name: " << cam_name << std::endl;
+    std::cout << "--------------------------------------" << std::endl;
+
+    std::cout << "  cam_mode: " << mj_model_->cam_mode[i] << std::endl;
+    std::cout << "  cam_bodyid: " << mj_model_->cam_bodyid[i] << std::endl;
+    // get body id position
+    std::cout << "  cam_bodyid position: [" << mj_model_->body_pos[3 * mj_model_->cam_bodyid[i]]
+              << ", " << mj_model_->body_pos[3 * mj_model_->cam_bodyid[i] + 1] << ", "
+              << mj_model_->body_pos[3 * mj_model_->cam_bodyid[i] + 2] << "]" << std::endl;
+
+    std::cout << "  cam_targetbodyid: " << mj_model_->cam_targetbodyid[i] << std::endl;
+
+    std::cout << "  cam_pos: [" << mj_model_->cam_pos[3 * i] << ", "
+              << mj_model_->cam_pos[3 * i + 1] << ", " << mj_model_->cam_pos[3 * i + 2] << "]"
+              << std::endl;
+
+    std::cout << "  cam_quat: [" << mj_model_->cam_quat[4 * i] << ", "
+              << mj_model_->cam_quat[4 * i + 1] << ", " << mj_model_->cam_quat[4 * i + 2] << ", "
+              << mj_model_->cam_quat[4 * i + 3] << "]" << std::endl;
+
+    std::cout << "  cam_poscom0: [" << mj_model_->cam_poscom0[3 * i] << ", "
+              << mj_model_->cam_poscom0[3 * i + 1] << ", " << mj_model_->cam_poscom0[3 * i + 2]
+              << "]" << std::endl;
+
+    std::cout << "  cam_pos0: [" << mj_model_->cam_pos0[3 * i] << ", "
+              << mj_model_->cam_pos0[3 * i + 1] << ", " << mj_model_->cam_pos0[3 * i + 2] << "]"
+              << std::endl;
+
+    std::cout << "  cam_mat0: [";
+    for (int j = 0; j < 9; j++)
+    {
+      std::cout << mj_model_->cam_mat0[9 * i + j] << (j < 8 ? ", " : "");
+    }
+    std::cout << "]" << std::endl;
+
+    std::cout << "  cam_orthographic: " << mj_model_->cam_orthographic[i] << std::endl;
+    std::cout << "  cam_fovy: " << mj_model_->cam_fovy[i] << std::endl;
+    std::cout << "  cam_ipd: " << mj_model_->cam_ipd[i] << std::endl;
+
+    std::cout << "  cam_resolution: [" << mj_model_->cam_resolution[2 * i] << ", "
+              << mj_model_->cam_resolution[2 * i + 1] << "]" << std::endl;
+
+    std::cout << "  cam_sensorsize: [" << mj_model_->cam_sensorsize[2 * i] << ", "
+              << mj_model_->cam_sensorsize[2 * i + 1] << "]" << std::endl;
+
+    std::cout << "  cam_intrinsic: [" << mj_model_->cam_intrinsic[4 * i] << ", "
+              << mj_model_->cam_intrinsic[4 * i + 1] << ", " << mj_model_->cam_intrinsic[4 * i + 2]
+              << ", " << mj_model_->cam_intrinsic[4 * i + 3] << "]" << std::endl;
+
+    std::cout << "  cam_user: [";
+    for (int j = 0; j < mj_model_->nuser_cam; j++)
+    {
+      std::cout << mj_model_->cam_user[mj_model_->nuser_cam * i + j]
+                << (j < mj_model_->nuser_cam - 1 ? ", " : "");
+    }
+    std::cout << "]" << std::endl;
+
+    std::cout << "======================================" << std::endl;
+  }
+
+  // Force crash or exit after printing
+  std::cerr << "Debug print complete. Exiting program." << std::endl;
+  exit(1);
+
   mjrRect viewport = {0, 0, 640, 480};
   std::vector<unsigned char> rgb(viewport.width * viewport.height * 3);
 
@@ -233,6 +300,10 @@ void MujocoRendering::capture_and_publish_cameras()
     mjtNum forward_x = mj_model_->cam_mat0[9 * i + 6];
     mjtNum forward_y = mj_model_->cam_mat0[9 * i + 7];
     mjtNum forward_z = mj_model_->cam_mat0[9 * i + 8];
+
+    // print the forwards
+    std::cout << "Camera forward: " << forward_x << " " << forward_y << " " << forward_z
+              << std::endl;
 
     // Set camera distance (adjust as needed)
     temp_cam.distance = 1.0;
