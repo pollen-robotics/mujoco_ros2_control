@@ -425,45 +425,57 @@ void MujocoRendering::capture_and_publish_cameras()
 
     //////////////////////DEPTH
 
-    // Define depth range for visualization
-    const float depth_min = 0.0f;   // Closest point (pure white)
-    const float depth_max = 10.0f;  // Anything >=10m is black
+    // Retrieve near and far clip planes from MuJoCo
+    const float near = mj_model_->vis.map.znear;
+    const float far = mj_model_->vis.map.zfar;
+    // const float near = 0.05f;  // Minimum depth capture (closer = better precision)
+    // const float far = 10.0f;
 
-    // ✅ Compute Depth Image in Meters
+    // Convert MuJoCo depth buffer to real-world depth in meters
     cv::Mat depth_img(viewport.height, viewport.width, CV_32FC1);
     for (int y = 0; y < viewport.height; y++)
     {
       for (int x = 0; x < viewport.width; x++)
       {
         int index = y * viewport.width + x;
-        float depth_val = depth[index];  // Raw MuJoCo inverse depth
+        float depth_val = depth[index];  // Raw MuJoCo depth
 
-        // Convert inverse MuJoCo depth to real-world meters (Avoid divide by zero)
-        float real_depth = 1.0f / std::max(depth_val, 1e-6f);
+        //  Convert inverse depth to real-world meters
+        float real_depth = near * far / (far - depth_val * (far - near));
+        // float real_depth = near / (1 - depth_val * (1 - near / far));
 
-        // Clip to max visualization range (e.g., 10m)
-        depth_img.at<float>(y, x) = std::min(real_depth, 10.0f);
+        // Ensure reasonable values
+        depth_img.at<float>(y, x) = std::max(near, std::min(real_depth, far));
+        // only store raw depth
+        // depth_img.at<float>(y, x) = depth_val;
       }
     }
 
-    // ✅ Flip image vertically for correct orientation
+    // Flip image vertically for OpenCV
     cv::flip(depth_img, depth_img, 0);
 
-    // ✅ **Fix RViz Error: Ensure Correct Data Size in `ros_depth`**
+    //  Print Debug Information
+    double min_val, max_val;
+    cv::minMaxLoc(depth_img, &min_val, &max_val);
+    std::cout << "Camera " << i << " Depth Image: " << std::endl;
+    std::cout << "Max depth: " << max_val << std::endl;
+    std::cout << "Min depth: " << min_val << std::endl;
+    // also print near and far
+    std::cout << "Near: " << near << std::endl;
+    std::cout << "Far: " << far << std::endl;
+
+    //  Publish Depth Image for RViz
     sensor_msgs::msg::Image ros_depth;
     ros_depth.header.stamp = node_->now();
     ros_depth.header.frame_id = "mujoco_camera_" + std::to_string(i) + "_depth";
     ros_depth.height = depth_img.rows;
     ros_depth.width = depth_img.cols;
-    ros_depth.encoding = "32FC1";  // ✅ Correct for RViz real depth visualization
+    ros_depth.encoding = "32FC1";  //  Correct encoding for real-world depth
     ros_depth.is_bigendian = false;
-    ros_depth.step = depth_img.cols * sizeof(float);           // ✅ Fix: Ensure correct `step` size
-    ros_depth.data.resize(ros_depth.step * ros_depth.height);  // ✅ Fix: Ensure correct total size
-    memcpy(
-      ros_depth.data.data(), depth_img.data,
-      ros_depth.step * ros_depth.height);  // ✅ Copy raw bytes correctly
+    ros_depth.step = depth_img.cols * sizeof(float);
+    ros_depth.data.resize(ros_depth.step * ros_depth.height);
+    memcpy(ros_depth.data.data(), depth_img.data, ros_depth.step * ros_depth.height);
 
-    // Publish real-world depth (in meters)
     depth_publishers_[i]->publish(ros_depth);
   }
 }
