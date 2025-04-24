@@ -98,7 +98,7 @@ hardware_interface::return_type MujocoSystem::write(
       }
       else
       {
-        mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.position_command;
+        mj_data_->ctrl[joint_state.mj_act_adr] = joint_state.position_command;
       }
     }
 
@@ -113,7 +113,7 @@ hardware_interface::return_type MujocoSystem::write(
       }
       else
       {
-        mj_data_->qvel[joint_state.mj_vel_adr] = joint_state.velocity_command;
+        mj_data_->ctrl[joint_state.mj_act_adr] = joint_state.velocity_command;
       }
     }
 
@@ -175,7 +175,7 @@ void MujocoSystem::register_joints(
     joint_state.mj_joint_type = mj_model_->jnt_type[mujoco_joint_id];
     joint_state.mj_pos_adr = mj_model_->jnt_qposadr[mujoco_joint_id];
     joint_state.mj_vel_adr = mj_model_->jnt_dofadr[mujoco_joint_id];
-
+    joint_state.mj_act_adr = mj_name2id(mj_model_,mjOBJ_ACTUATOR,joint.name.c_str());
     joint_states_.at(joint_index) = joint_state;
     JointState &last_joint_state = joint_states_.at(joint_index);
 
