@@ -70,21 +70,27 @@ hardware_interface::return_type MujocoSystem::write(
   const rclcpp::Time & /* time */, const rclcpp::Duration &period)
 {
   // update mimic joint
-  for (auto &joint_state : joint_states_)
-  {
-    if (joint_state.is_mimic)
+
+
+    for (auto &joint_state : joint_states_)
     {
-      joint_state.position_command =
-        joint_state.mimic_multiplier *
-        joint_states_.at(joint_state.mimicked_joint_index).position_command;
-      joint_state.velocity_command =
-        joint_state.mimic_multiplier *
-        joint_states_.at(joint_state.mimicked_joint_index).velocity_command;
-      joint_state.effort_command =
-        joint_state.mimic_multiplier *
-        joint_states_.at(joint_state.mimicked_joint_index).effort_command;
+	if (joint_state.is_mimic)
+	{
+
+	    joint_state.position_command =
+		joint_state.mimic_multiplier *
+		joint_states_.at(joint_state.mimicked_joint_index).position_command;
+	    joint_state.velocity_command =
+		joint_state.mimic_multiplier *
+		joint_states_.at(joint_state.mimicked_joint_index).velocity_command;
+	    joint_state.effort_command =
+		joint_state.mimic_multiplier *
+		joint_states_.at(joint_state.mimicked_joint_index).effort_command;
+
+
+	}
     }
-  }
+
   // Joint states
   for (auto &joint_state : joint_states_)
   {
@@ -98,7 +104,13 @@ hardware_interface::return_type MujocoSystem::write(
       }
       else
       {
-        mj_data_->ctrl[joint_state.mj_act_adr] = joint_state.position_command;
+
+          joint_state.position_command =
+            std::min(joint_state.joint_limits.max_position, joint_state.position_command);
+          joint_state.position_command =
+            std::max(joint_state.joint_limits.min_position, joint_state.position_command);
+
+	  mj_data_->ctrl[joint_state.mj_act_adr] = joint_state.position_command;
       }
     }
 
@@ -402,6 +414,7 @@ void MujocoSystem::get_joint_limits(
 {
   if (urdf_joint->limits)
   {
+
     joint_limits.min_position = urdf_joint->limits->lower;
     joint_limits.max_position = urdf_joint->limits->upper;
     joint_limits.max_velocity = urdf_joint->limits->velocity;

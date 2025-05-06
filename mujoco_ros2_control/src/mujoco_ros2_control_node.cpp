@@ -25,6 +25,8 @@
 #include "mujoco_ros2_control/mujoco_rendering.hpp"
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
 
+#include <chrono>
+
 // MuJoCo data structures
 mjModel *mujoco_model = nullptr;
 mjData *mujoco_data = nullptr;
@@ -80,6 +82,10 @@ int main(int argc, const char **argv)
   auto cameras = std::make_unique<mujoco_ros2_control::MujocoCameras>(node);
   cameras->init(mujoco_model);
 
+  auto start = std::chrono::system_clock::now();
+    // Some computation here
+
+
   // run main loop, target real-time simulation and 60 fps rendering with cameras around 6 hz
   mjtNum last_cam_update = mujoco_data->time;
   while (rclcpp::ok() && !rendering->is_close_flag_raised())
@@ -92,6 +98,9 @@ int main(int argc, const char **argv)
     while (mujoco_data->time - simstart < 1.0 / 60.0)
     {
       mujoco_control.update();
+      auto end = std::chrono::system_clock::now();
+      std::chrono::duration<double> elapsed_seconds = end - start;
+      // RCLCPP_ERROR(node->get_logger(), "DEBUG REAL TICK: %f",elapsed_seconds );
     }
     rendering->update();
 

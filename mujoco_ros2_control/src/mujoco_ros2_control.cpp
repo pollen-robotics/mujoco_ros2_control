@@ -24,6 +24,8 @@
 
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
 
+
+
 namespace mujoco_ros2_control
 {
 MujocoRos2Control::MujocoRos2Control(
@@ -196,7 +198,10 @@ void MujocoRos2Control::update()
 
   rclcpp::Time sim_time_ros(sim_time_sec, sim_time_nanosec, RCL_ROS_TIME);
   rclcpp::Duration sim_period = sim_time_ros - last_update_sim_time_ros_;
+  // mju_error("DEBUG UPDATE: %f",sim_time_nanosec );
 
+
+  // RCLCPP_ERROR(logger_, "DEBUG TICK: %f",sim_time );
   publish_sim_time(sim_time_ros);
 
   mj_step1(mj_model_, mj_data_);
@@ -207,7 +212,6 @@ void MujocoRos2Control::update()
     controller_manager_->update(sim_time_ros, sim_period);
     last_update_sim_time_ros_ = sim_time_ros;
   }
-
   // use same time as for read and update call - this is how it is done in ros2_control_node
   controller_manager_->write(sim_time_ros, sim_period);
 
