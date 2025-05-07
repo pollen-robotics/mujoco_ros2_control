@@ -70,11 +70,12 @@ int main(int argc, const char **argv)
   RCLCPP_INFO_STREAM(
     node->get_logger(), "Mujoco ros2 controller has been successfully initialized !");
 
-  // initialize mujoco visualization environment for rendering and cameras
-  if (!glfwInit())
-  {
-    mju_error("Could not initialize GLFW");
-  }
+  // // // // // // // // // // // // initialize mujoco visualization environment for rendering and
+  // cameras
+  // // // // // // // // // // // if (!glfwInit())
+  // // // // // // // // // // // {
+  // // // // // // // // // // //   mju_error("Could not initialize GLFW");
+  // // // // // // // // // // // }
   auto rendering = mujoco_ros2_control::MujocoRendering::get_instance();
   rendering->init(mujoco_model, mujoco_data);
   RCLCPP_INFO_STREAM(node->get_logger(), "Mujoco rendering has been successfully initialized !");
@@ -83,8 +84,7 @@ int main(int argc, const char **argv)
   cameras->init(mujoco_model);
 
   auto start = std::chrono::system_clock::now();
-    // Some computation here
-
+  // Some computation here
 
   // run main loop, target real-time simulation and 60 fps rendering with cameras around 6 hz
   mjtNum last_cam_update = mujoco_data->time;

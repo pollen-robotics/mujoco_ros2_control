@@ -1,6 +1,8 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GL/gl.h>
 #include <mujoco/mujoco.h>
 #include <atomic>
 #include <vector>
@@ -52,24 +54,17 @@ private:
   mjvOption mjv_opt_;
   mjvScene mjv_scn_;
   mjrContext mjr_con_;
-  GLFWwindow *window_;
 
   bool button_left_;
   bool button_middle_;
   bool button_right_;
   double lastx_;
   double lasty_;
-
-  // Input callbacks
-  static void keyboard_callback(GLFWwindow *, int, int, int, int);
-  static void mouse_button_callback(GLFWwindow *, int, int, int);
-  static void mouse_move_callback(GLFWwindow *, double, double);
-  static void scroll_callback(GLFWwindow *, double, double);
-
-  void keyboard_callback_impl(GLFWwindow *, int, int, int, int);
-  void mouse_button_callback_impl(GLFWwindow *, int, int, int);
-  void mouse_move_callback_impl(GLFWwindow *, double, double);
-  void scroll_callback_impl(GLFWwindow *, double, double);
+  EGLDisplay egl_display_ = EGL_NO_DISPLAY;
+  EGLContext egl_context_ = EGL_NO_CONTEXT;
+  EGLSurface egl_surface_ = EGL_NO_SURFACE;
+  int fb_width_ = 1200;
+  int fb_height_ = 900;
 };
 
 }  // namespace mujoco_ros2_control

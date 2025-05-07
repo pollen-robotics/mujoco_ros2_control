@@ -19,11 +19,12 @@ find_package(pluginlib REQUIRED)
 find_package(controller_manager REQUIRED)
 find_package(joint_limits REQUIRED)
 find_package(urdf REQUIRED)
-find_package(glfw3 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(control_toolbox REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(OpenGL REQUIRED)
+find_library(EGL_LIB EGL REQUIRED)
+
 
 set(THIS_PACKAGE_DEPENDS
   ament_cmake
@@ -33,7 +34,6 @@ set(THIS_PACKAGE_DEPENDS
   controller_manager
   joint_limits
   urdf
-  glfw3
   control_toolbox
 )
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
@@ -82,13 +82,13 @@ add_executable(mujoco_ros2_control
 ament_target_dependencies(mujoco_ros2_control ${THIS_PACKAGE_DEPENDS})
 target_link_libraries(mujoco_ros2_control
   ${MUJOCO_LIB}
-  glfw
   OpenSSL::SSL
   OpenSSL::Crypto
   pthread
   z
-  ${OPENGL_gl_LIBRARY}  # ✅ Add this
+  ${OPENGL_gl_LIBRARY}
   /home/reachy/uWebSockets/uSockets/uSockets.a
+  ${EGL_LIB}
 )
 
 target_include_directories(mujoco_ros2_control

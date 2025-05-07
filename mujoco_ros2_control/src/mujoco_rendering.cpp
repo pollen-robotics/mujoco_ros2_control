@@ -73,7 +73,7 @@ MujocoRendering::MujocoRendering()
             {
               double dx = j["dx"];
               double dy = j["dy"];
-              viewer->inject_mouse_move(dx, dy);
+              // viewer->inject_mouse_move(dx, dy);
             }
             else if (j["type"] == "mouse_button")
             {
@@ -112,53 +112,87 @@ void MujocoRendering::init(mjModel *mujoco_model, mjData *mujoco_data)
   mj_model_ = mujoco_model;
   mj_data_ = mujoco_data;
 
-  glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
-  glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_TRUE);
-  window_ = glfwCreateWindow(1200, 900, "Demo", NULL, NULL);
-  glfwMakeContextCurrent(window_);
+  egl_display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  if (!eglInitialize(egl_display_, nullptr, nullptr))
+  {
+    std::cerr << "EGL initialization failed\n";
+    std::exit(1);
+  }
 
+  const EGLint config_attribs[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE,
+                                   EGL_OPENGL_BIT,   EGL_DEPTH_SIZE,  24,  // ✅ ensure depth
+                                   EGL_NONE};
+  EGLConfig egl_config;
+  EGLint num_configs;
+  if (!eglChooseConfig(egl_display_, config_attribs, &egl_config, 1, &num_configs))
+  {
+    std::cerr << "EGL config selection failed\n";
+    std::exit(1);
+  }
+
+  const EGLint pbuffer_attribs[] = {EGL_WIDTH, fb_width_, EGL_HEIGHT, fb_height_, EGL_NONE};
+  egl_surface_ = eglCreatePbufferSurface(egl_display_, egl_config, pbuffer_attribs);
+  eglBindAPI(EGL_OPENGL_API);
+  const EGLint ctx_attribs[] = {
+    EGL_CONTEXT_CLIENT_VERSION, 2,  // or omit
+    EGL_NONE};
+  egl_context_ = eglCreateContext(egl_display_, egl_config, EGL_NO_CONTEXT, ctx_attribs);
+  eglMakeCurrent(egl_display_, egl_surface_, egl_surface_, egl_context_);
+  glEnable(GL_DEPTH_TEST);
+
+  // Force OpenGL to be ready
+  glClearColor(0.2f, 0.4f, 0.6f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  glFinish();  // Ensure all commands have been processed
   mjv_defaultCamera(&mjv_cam_);
   mjv_defaultOption(&mjv_opt_);
   mjv_defaultScene(&mjv_scn_);
   mjr_defaultContext(&mjr_con_);
+
   mjv_cam_.type = mjCAMERA_FREE;
-  mjv_cam_.distance = 8.;
+  mjv_cam_.lookat[0] = 0;
+  mjv_cam_.lookat[1] = 0;
+  mjv_cam_.lookat[2] = 1.0;
+  mjv_cam_.distance = 3.0;
 
   mjv_makeScene(mj_model_, &mjv_scn_, 2000);
   mjr_makeContext(mj_model_, &mjr_con_, mjFONTSCALE_150);
-
-  glfwSetKeyCallback(window_, &MujocoRendering::keyboard_callback);
-  glfwSetCursorPosCallback(window_, &MujocoRendering::mouse_move_callback);
-  glfwSetMouseButtonCallback(window_, &MujocoRendering::mouse_button_callback);
-  glfwSetScrollCallback(window_, &MujocoRendering::scroll_callback);
-
-  glfwSwapInterval(0);
+  mjr_resizeOffscreen(fb_width_, fb_height_, &mjr_con_);
 }
 
-bool MujocoRendering::is_close_flag_raised() { return glfwWindowShouldClose(window_); }
-
+bool MujocoRendering::is_close_flag_raised() { return false; }
 void MujocoRendering::update()
 {
-  mjrRect viewport = {0, 0, 0, 0};
-  glfwGetFramebufferSize(window_, &viewport.width, &viewport.height);
-  glfwMakeContextCurrent(window_);
-  mjr_setBuffer(mjFB_WINDOW, &mjr_con_);
-
-  mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, NULL, &mjv_cam_, mjCAT_ALL, &mjv_scn_);
-  mjr_render(viewport, &mjv_scn_, &mjr_con_);
-  glfwSwapBuffers(window_);
-  glFinish();
-
-  glfwPollEvents();
-
   static uint32_t frame_id = 0;
 
-  auto raw = read_pixels(viewport.width, viewport.height);
-  auto jpeg = encode_jpeg(raw, viewport.width, viewport.height);
+  eglMakeCurrent(egl_display_, egl_surface_, egl_surface_, egl_context_);
+  glViewport(0, 0, fb_width_, fb_height_);
+  glEnable(GL_DEPTH_TEST);
 
-  uint32_t net_id = htonl(frame_id++);  // Convert to network byte order
+  // Set the offscreen buffer and render
+  mjr_setBuffer(mjFB_OFFSCREEN, &mjr_con_);
+  mj_step(mj_model_, mj_data_);
+  mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, nullptr, &mjv_cam_, mjCAT_ALL, &mjv_scn_);
+  mjr_render({0, 0, fb_width_, fb_height_}, &mjv_scn_, &mjr_con_);
+  // glFinish();
+  glFlush();
+
+  // Allocate RGB buffer and read pixels using MuJoCo
+  std::vector<unsigned char> rgb(3 * fb_width_ * fb_height_);
+  mjr_readPixels(rgb.data(), nullptr, {0, 0, fb_width_, fb_height_}, &mjr_con_);
+
+  // Flip vertically (OpenGL origin is bottom-left)
+  std::vector<unsigned char> flipped(3 * fb_width_ * fb_height_);
+  for (int y = 0; y < fb_height_; ++y)
+  {
+    std::memcpy(
+      &flipped[y * fb_width_ * 3], &rgb[(fb_height_ - 1 - y) * fb_width_ * 3], fb_width_ * 3);
+  }
+
+  // Compress and send
+  auto jpeg = encode_jpeg(flipped, fb_width_, fb_height_);
+  uint32_t net_id = htonl(frame_id++);
   std::vector<unsigned char> framed;
-  framed.reserve(4 + jpeg.size());
   framed.insert(
     framed.end(), reinterpret_cast<unsigned char *>(&net_id),
     reinterpret_cast<unsigned char *>(&net_id) + 4);
@@ -169,6 +203,32 @@ void MujocoRendering::update()
     ws_client_->send(
       std::string_view(reinterpret_cast<char *>(framed.data()), framed.size()),
       uWS::OpCode::BINARY);
+  }
+}
+
+void MujocoRendering::close()
+{
+  // Free MuJoCo visualization resources
+  mjv_freeScene(&mjv_scn_);
+  mjr_freeContext(&mjr_con_);
+
+  // Destroy EGL surface and context
+  if (egl_surface_ != EGL_NO_SURFACE)
+  {
+    eglDestroySurface(egl_display_, egl_surface_);
+    egl_surface_ = EGL_NO_SURFACE;
+  }
+
+  if (egl_context_ != EGL_NO_CONTEXT)
+  {
+    eglDestroyContext(egl_display_, egl_context_);
+    egl_context_ = EGL_NO_CONTEXT;
+  }
+
+  if (egl_display_ != EGL_NO_DISPLAY)
+  {
+    eglTerminate(egl_display_);
+    egl_display_ = EGL_NO_DISPLAY;
   }
 }
 
@@ -198,104 +258,23 @@ std::vector<unsigned char> MujocoRendering::encode_jpeg(
   return jpeg_buf;
 }
 
-void MujocoRendering::close()
-{
-  mjv_freeScene(&mjv_scn_);
-  mjr_freeContext(&mjr_con_);
-  glfwDestroyWindow(window_);
+// // void MujocoRendering::inject_mouse_move(double dx, double dy)
+// // {
+// //   int width, height;
+// //   glfwGetWindowSize(window_, &width, &height);
 
-#if defined(__APPLE__) || defined(_WIN32)
-  glfwTerminate();
-#endif
-}
+// //   mjtMouse action;
+// //   bool mod_shift = false;  // You could add support for Shift key too
 
-void MujocoRendering::keyboard_callback(
-  GLFWwindow *window, int key, int scancode, int act, int mods)
-{
-  get_instance()->keyboard_callback_impl(window, key, scancode, act, mods);
-}
+// //   if (button_right_)
+// //     action = mod_shift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V;
+// //   else if (button_left_)
+// //     action = mod_shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;
+// //   else
+// //     action = mjMOUSE_ZOOM;
 
-void MujocoRendering::mouse_button_callback(GLFWwindow *window, int button, int act, int mods)
-{
-  get_instance()->mouse_button_callback_impl(window, button, act, mods);
-}
-
-void MujocoRendering::mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
-{
-  get_instance()->mouse_move_callback_impl(window, xpos, ypos);
-}
-
-void MujocoRendering::scroll_callback(GLFWwindow *window, double xoffset, double yoffset)
-{
-  get_instance()->scroll_callback_impl(window, xoffset, yoffset);
-}
-
-void MujocoRendering::keyboard_callback_impl(GLFWwindow *, int key, int, int act, int)
-{
-  if (act == GLFW_PRESS && key == GLFW_KEY_BACKSPACE)
-  {
-    mj_resetData(mj_model_, mj_data_);
-    mj_forward(mj_model_, mj_data_);
-  }
-}
-
-void MujocoRendering::mouse_button_callback_impl(GLFWwindow *window, int, int, int)
-{
-  button_left_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
-  button_middle_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
-  button_right_ = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
-  glfwGetCursorPos(window, &lastx_, &lasty_);
-}
-
-void MujocoRendering::mouse_move_callback_impl(GLFWwindow *window, double xpos, double ypos)
-{
-  if (!button_left_ && !button_middle_ && !button_right_) return;
-
-  double dx = xpos - lastx_;
-  double dy = ypos - lasty_;
-  lastx_ = xpos;
-  lasty_ = ypos;
-
-  int width, height;
-  glfwGetWindowSize(window, &width, &height);
-
-  bool mod_shift =
-    (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-     glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-
-  mjtMouse action;
-  if (button_right_)
-    action = mod_shift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V;
-  else if (button_left_)
-    action = mod_shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;
-  else
-    action = mjMOUSE_ZOOM;
-
-  mjv_moveCamera(mj_model_, action, dx / height, dy / height, &mjv_scn_, &mjv_cam_);
-}
-
-void MujocoRendering::scroll_callback_impl(GLFWwindow *, double, double yoffset)
-{
-  mjv_moveCamera(mj_model_, mjMOUSE_ZOOM, 0, -0.05 * yoffset, &mjv_scn_, &mjv_cam_);
-}
-
-void MujocoRendering::inject_mouse_move(double dx, double dy)
-{
-  int width, height;
-  glfwGetWindowSize(window_, &width, &height);
-
-  mjtMouse action;
-  bool mod_shift = false;  // You could add support for Shift key too
-
-  if (button_right_)
-    action = mod_shift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V;
-  else if (button_left_)
-    action = mod_shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;
-  else
-    action = mjMOUSE_ZOOM;
-
-  mjv_moveCamera(mj_model_, action, dx / height, dy / height, &mjv_scn_, &mjv_cam_);
-}
+// //   mjv_moveCamera(mj_model_, action, dx / height, dy / height, &mjv_scn_, &mjv_cam_);
+// // }
 
 void MujocoRendering::inject_mouse_buttons(bool left, bool middle, bool right)
 {
