@@ -30,6 +30,10 @@ public:
   void close();
   bool is_close_flag_raised();
 
+  void inject_mouse_move(double dx, double dy);
+  void inject_mouse_buttons(bool left, bool middle, bool right);
+  void inject_scroll(double dy);
+
 private:
   static MujocoRendering *instance_;
 

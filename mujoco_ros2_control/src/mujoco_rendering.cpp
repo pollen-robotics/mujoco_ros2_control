@@ -10,6 +10,7 @@
 #include <uwebsockets/App.h>
 #include <atomic>
 #include <cstring>
+#include <nlohmann/json.hpp>
 #include <thread>
 #include <vector>
 
@@ -58,6 +59,37 @@ MujocoRendering::MujocoRendering()
         std::cout << "[WS] Client disconnected\n";
       };
 
+      behavior.message = [](auto *ws, std::string_view message, uWS::OpCode opCode)
+      {
+        if (opCode == uWS::OpCode::TEXT)
+        {
+          try
+          {
+            auto j = nlohmann::json::parse(message);
+
+            auto *viewer = MujocoRendering::get_instance();
+            if (j["type"] == "mouse_move")
+            {
+              double dx = j["dx"];
+              double dy = j["dy"];
+              viewer->inject_mouse_move(dx, dy);
+            }
+            else if (j["type"] == "mouse_button")
+            {
+              viewer->inject_mouse_buttons(j["left"], j["middle"], j["right"]);
+            }
+            else if (j["type"] == "scroll")
+            {
+              double dy = j["dy"];
+              viewer->inject_scroll(dy);
+            }
+          }
+          catch (...)
+          {
+            std::cerr << "Failed to parse control message\n";
+          }
+        }
+      };
       uWS::App()
         .ws<PerSocketData>("/*", std::move(behavior))  // ✅ fix here
         .listen(
@@ -230,6 +262,36 @@ void MujocoRendering::mouse_move_callback_impl(GLFWwindow *window, double xpos, 
 void MujocoRendering::scroll_callback_impl(GLFWwindow *, double, double yoffset)
 {
   mjv_moveCamera(mj_model_, mjMOUSE_ZOOM, 0, -0.05 * yoffset, &mjv_scn_, &mjv_cam_);
+}
+
+void MujocoRendering::inject_mouse_move(double dx, double dy)
+{
+  int width, height;
+  glfwGetWindowSize(window_, &width, &height);
+
+  mjtMouse action;
+  bool mod_shift = false;  // You could add support for Shift key too
+
+  if (button_right_)
+    action = mod_shift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V;
+  else if (button_left_)
+    action = mod_shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;
+  else
+    action = mjMOUSE_ZOOM;
+
+  mjv_moveCamera(mj_model_, action, dx / height, dy / height, &mjv_scn_, &mjv_cam_);
+}
+
+void MujocoRendering::inject_mouse_buttons(bool left, bool middle, bool right)
+{
+  button_left_ = left;
+  button_middle_ = middle;
+  button_right_ = right;
+}
+
+void MujocoRendering::inject_scroll(double dy)
+{
+  mjv_moveCamera(mj_model_, mjMOUSE_ZOOM, 0, -0.0005 * dy, &mjv_scn_, &mjv_cam_);
 }
 
 }  // namespace mujoco_ros2_control
