@@ -22,6 +22,8 @@ find_package(urdf REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(control_toolbox REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(OpenGL REQUIRED)
 
 set(THIS_PACKAGE_DEPENDS
   ament_cmake
@@ -78,7 +80,17 @@ add_executable(mujoco_ros2_control
   src/mujoco_cameras.cpp
 )
 ament_target_dependencies(mujoco_ros2_control ${THIS_PACKAGE_DEPENDS})
-target_link_libraries(mujoco_ros2_control ${MUJOCO_LIB} glfw)
+target_link_libraries(mujoco_ros2_control
+  ${MUJOCO_LIB}
+  glfw
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  pthread
+  z
+  ${OPENGL_gl_LIBRARY}  # ✅ Add this
+  /home/reachy/uWebSockets/uSockets/uSockets.a
+)
+
 target_include_directories(mujoco_ros2_control
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
