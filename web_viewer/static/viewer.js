@@ -1,24 +1,52 @@
 const canvas = document.getElementById('mujocoCanvas');
 const ctx = canvas.getContext('2d');
-const img = new Image();
 
-const ws = new WebSocket('ws://localhost:9002');  // C++ WebSocket server
+let lastFrameId = 0;
+
+const ws = new WebSocket('ws://localhost:9002');
 ws.binaryType = 'blob';
-
-ws.onmessage = (event) => {
-    const blob = event.data;
-    const url = URL.createObjectURL(blob);
-    img.onload = () => {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        URL.revokeObjectURL(url);
-    };
-    img.src = url;
-};
 
 ws.onopen = () => console.log("[WS] Connected to MuJoCo");
 ws.onclose = () => console.warn("[WS] Disconnected");
 
+ws.onmessage = (event) => {
+    const reader = new FileReader();
+    reader.onload = function () {
+        const buffer = reader.result;
+        const view = new DataView(buffer);
+        const frameId = view.getUint32(0, false);  // Big endian (network byte order)
+        //console log every frame id
+        console.log("Frame ID:", frameId);
+        if (frameId < lastFrameId) {
+            // Discard immediately
+            // console log fram id
+
+            return;
+        }
+
+        const blob = new Blob([buffer.slice(4)], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+
+        const img = new Image();
+        img.onload = () => {
+            // Onload can happen much later — verify again
+            if (frameId < lastFrameId) {
+                URL.revokeObjectURL(url);
+                return;
+            }
+
+            lastFrameId = frameId;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+        };
+        img.src = url;
+    };
+    reader.readAsArrayBuffer(event.data);
+};
+
+
+// Mouse interaction handling
 let lastMouse = { x: 0, y: 0 };
 let buttons = { left: false, middle: false, right: false };
 

@@ -7,6 +7,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#include <arpa/inet.h>  // For htonl
 #include <uwebsockets/App.h>
 #include <atomic>
 #include <cstring>
@@ -146,14 +147,28 @@ void MujocoRendering::update()
   mjv_updateScene(mj_model_, mj_data_, &mjv_opt_, NULL, &mjv_cam_, mjCAT_ALL, &mjv_scn_);
   mjr_render(viewport, &mjv_scn_, &mjr_con_);
   glfwSwapBuffers(window_);
+  glFinish();
+
   glfwPollEvents();
+
+  static uint32_t frame_id = 0;
 
   auto raw = read_pixels(viewport.width, viewport.height);
   auto jpeg = encode_jpeg(raw, viewport.width, viewport.height);
 
+  uint32_t net_id = htonl(frame_id++);  // Convert to network byte order
+  std::vector<unsigned char> framed;
+  framed.reserve(4 + jpeg.size());
+  framed.insert(
+    framed.end(), reinterpret_cast<unsigned char *>(&net_id),
+    reinterpret_cast<unsigned char *>(&net_id) + 4);
+  framed.insert(framed.end(), jpeg.begin(), jpeg.end());
+
   if (ws_connected_ && ws_client_)
   {
-    ws_client_->send(std::string_view((char *)jpeg.data(), jpeg.size()), uWS::OpCode::BINARY);
+    ws_client_->send(
+      std::string_view(reinterpret_cast<char *>(framed.data()), framed.size()),
+      uWS::OpCode::BINARY);
   }
 }
 
