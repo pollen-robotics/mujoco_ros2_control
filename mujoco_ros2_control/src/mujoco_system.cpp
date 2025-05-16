@@ -19,6 +19,8 @@
 // THE SOFTWARE.
 
 #include "mujoco_ros2_control/mujoco_system.hpp"
+#include "rclcpp/time.hpp"
+#include "builtin_interfaces/msg/time.hpp"
 
 namespace mujoco_ros2_control
 {
@@ -31,11 +33,15 @@ std::vector<hardware_interface::StateInterface> MujocoSystem::export_state_inter
 
 std::vector<hardware_interface::CommandInterface> MujocoSystem::export_command_interfaces()
 {
+  RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Total command interfaces: %ld", command_interfaces_.size());
+  for (const auto& iface : command_interfaces_) {
+    RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "  - Command interface: %s/%s", iface.get_name().c_str(), iface.get_interface_name().c_str());
+  }
   return std::move(command_interfaces_);
 }
 
 hardware_interface::return_type MujocoSystem::read(
-  const rclcpp::Time & /* time */, const rclcpp::Duration & /* period */)
+  const rclcpp::Time & time, const rclcpp::Duration & /* period */)
 {
   // Joint states
   for (auto &joint_state : joint_states_)
@@ -62,6 +68,58 @@ hardware_interface::return_type MujocoSystem::read(
     data.torque.data.y() = -mj_data_->sensordata[data.torque.mj_sensor_index + 1];
     data.torque.data.z() = -mj_data_->sensordata[data.torque.mj_sensor_index + 2];
   }
+
+  // ---- ODOMÉTRIE ----
+
+  // ID du body de base (ex: base_link)
+  int base_body_id = mj_name2id(mj_model_, mjOBJ_BODY, "base_link");  // adapte le nom si nécessaire
+  if (base_body_id < 0) {
+    RCLCPP_WARN(rclcpp::get_logger("mujoco_system"), "Base body not found!");
+    return hardware_interface::return_type::OK;
+  }
+
+  if (!odom_initialized_) {
+    node_ = rclcpp::Node::make_shared("mujoco_system_odom_node");
+    odom_publisher_ = node_->create_publisher<nav_msgs::msg::Odometry>("/odom_mujoco", 10);
+    odom_initialized_ = true;
+    RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized.");
+  }
+
+  // Position et orientation
+  const double* pos = &mj_data_->xpos[3 * base_body_id];
+  const double* quat = &mj_data_->xquat[4 * base_body_id];
+
+  // Vitesse linéaire et angulaire (dans la frame du corps)
+  const double* cvel = &mj_data_->cvel[6 * base_body_id]; // [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
+
+  auto odom = nav_msgs::msg::Odometry();
+  odom.header.stamp = builtin_interfaces::msg::Time();
+  odom.header.stamp.sec = static_cast<int32_t>(time.seconds());
+  odom.header.stamp.nanosec = static_cast<uint32_t>((time.seconds() - odom.header.stamp.sec) * 1e9);
+  odom.header.frame_id = "odom_mujoco";        // monde
+  odom.child_frame_id = "base_link";    // robot
+
+  // Pose
+  odom.pose.pose.position.x = pos[0];
+  odom.pose.pose.position.y = pos[1];
+  odom.pose.pose.position.z = pos[2];
+
+  odom.pose.pose.orientation.x = quat[0];
+  odom.pose.pose.orientation.y = quat[1];
+  odom.pose.pose.orientation.z = quat[2];
+  odom.pose.pose.orientation.w = quat[3];
+
+  // Twist (dans la frame du robot)
+  odom.twist.twist.linear.x = cvel[0];
+  odom.twist.twist.linear.y = cvel[1];
+  odom.twist.twist.linear.z = cvel[2];
+  odom.twist.twist.angular.x = cvel[3];
+  odom.twist.twist.angular.y = cvel[4];
+  odom.twist.twist.angular.z = cvel[5];
+
+  // Publie l'odom
+  odom_publisher_->publish(odom);
+  // ---- FIN ODOMÉTRIE ----
 
   return hardware_interface::return_type::OK;
 }
@@ -116,6 +174,8 @@ hardware_interface::return_type MujocoSystem::write(
 
     if (joint_state.is_velocity_control_enabled)
     {
+      RCLCPP_INFO(rclcpp::get_logger("mujoco_system"), "Joint command = %.3f", joint_state.velocity_command);
+
       if (joint_state.is_pid_enabled)
       {
         double error = joint_state.velocity_command - mj_data_->qvel[joint_state.mj_vel_adr];
@@ -237,6 +297,9 @@ void MujocoSystem::register_joints(
     // state interfaces
     for (const auto &state_if : joint.state_interfaces)
     {
+      RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Joint %s has state interface: %s",
+            joint.name.c_str(), state_if.name.c_str());
+
       if (state_if.name == hardware_interface::HW_IF_POSITION)
       {
         state_interfaces_.emplace_back(
@@ -287,6 +350,9 @@ void MujocoSystem::register_joints(
     // overwrite joint limit with min/max value
     for (const auto &command_if : joint.command_interfaces)
     {
+      RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Joint %s has command interface: %s",
+            joint.name.c_str(), command_if.name.c_str());
+
       if (command_if.name.find(hardware_interface::HW_IF_POSITION) != std::string::npos)
       {
         command_interfaces_.emplace_back(
@@ -299,6 +365,7 @@ void MujocoSystem::register_joints(
       }
       else if (command_if.name.find(hardware_interface::HW_IF_VELOCITY) != std::string::npos)
       {
+        // RCLCPP_INFO(logger, "Adding command interface: %s/velocity", joint.name.c_str());
         command_interfaces_.emplace_back(
           joint.name, hardware_interface::HW_IF_VELOCITY, &last_joint_state.velocity_command);
         last_joint_state.is_velocity_control_enabled = true;
