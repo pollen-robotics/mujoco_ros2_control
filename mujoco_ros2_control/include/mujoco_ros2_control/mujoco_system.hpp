@@ -24,7 +24,6 @@
 #include <Eigen/Dense>
 #include <string>
 #include <vector>
-#include <nav_msgs/msg/odometry.hpp>
 
 #include "control_toolbox/pid.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
@@ -127,11 +126,6 @@ private:
   std::vector<JointState> joint_states_;
   std::vector<FTSensorData> ft_sensor_data_;
   std::vector<IMUSensorData> imu_sensor_data_;
-
-  // Ajout pour publier l’odométrie
-  bool odom_initialized_ = false;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
-  rclcpp::Node::SharedPtr node_;
 
   mjModel *mj_model_;
   mjData *mj_data_;
