@@ -104,10 +104,10 @@ hardware_interface::return_type MujocoSystem::read(
   odom.pose.pose.position.y = pos[1];
   odom.pose.pose.position.z = pos[2];
 
-  odom.pose.pose.orientation.x = quat[0];
-  odom.pose.pose.orientation.y = quat[1];
-  odom.pose.pose.orientation.z = quat[2];
-  odom.pose.pose.orientation.w = quat[3];
+  odom.pose.pose.orientation.w = quat[0];
+  odom.pose.pose.orientation.x = quat[1];
+  odom.pose.pose.orientation.y = quat[2];
+  odom.pose.pose.orientation.z = quat[3];
 
   // Twist (dans la frame du robot)
   odom.twist.twist.linear.x = cvel[0];
@@ -174,7 +174,7 @@ hardware_interface::return_type MujocoSystem::write(
 
     if (joint_state.is_velocity_control_enabled)
     {
-      RCLCPP_INFO(rclcpp::get_logger("mujoco_system"), "Joint command = %.3f", joint_state.velocity_command);
+      // RCLCPP_INFO(rclcpp::get_logger("mujoco_system"), "Joint command = %.3f", joint_state.velocity_command);
 
       if (joint_state.is_pid_enabled)
       {
