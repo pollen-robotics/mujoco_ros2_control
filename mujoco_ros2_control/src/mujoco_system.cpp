@@ -89,9 +89,9 @@ hardware_interface::return_type MujocoSystem::read(
     "/cmd_vel_gazebo", 10,
     [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
       this->last_cmd_vel_ = *msg;
-      RCLCPP_ERROR(rclcpp::get_logger("mujoco_system"), "Received cmd_vel_fake: lin=%.2f %.2f %.2f ang=%.2f %.2f %.2f",
-        msg->linear.x, msg->linear.y, msg->linear.z,
-        msg->angular.x, msg->angular.y, msg->angular.z);
+      // RCLCPP_ERROR(rclcpp::get_logger("mujoco_system"), "Received cmd_vel_fake: lin=%.2f %.2f %.2f ang=%.2f %.2f %.2f",
+      //   msg->linear.x, msg->linear.y, msg->linear.z,
+      //   msg->angular.x, msg->angular.y, msg->angular.z);
     });
     odom_initialized_ = true;
     RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized.");
