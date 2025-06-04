@@ -21,6 +21,7 @@
 #include "mujoco_ros2_control/mujoco_system.hpp"
 #include "rclcpp/time.hpp"
 #include "builtin_interfaces/msg/time.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 
 namespace mujoco_ros2_control
 {
@@ -69,6 +70,17 @@ hardware_interface::return_type MujocoSystem::read(
     data.torque.data.z() = -mj_data_->sensordata[data.torque.mj_sensor_index + 2];
   }
 
+  for (int i = 0; i < mj_model_->nsensor; ++i) {
+    if (mj_model_->sensor_type[i] == mjSENS_RANGEFINDER) {
+      int address = mj_model_->sensor_adr[i];
+      double distance = mj_data_->sensordata[address];
+
+      RCLCPP_INFO(node_->get_logger(), "Sensor %s: %.3f m",
+                  mj_id2name(mj_model_, mjOBJ_SENSOR, i),
+                  distance);
+    }
+  }
+
   // ---- ODOMETRY AND FAKE VELOCITY CONTROL ----
 
   int base_body_id = mj_name2id(mj_model_, mjOBJ_BODY, "base_link");  // adapte le nom si nécessaire
@@ -96,6 +108,12 @@ hardware_interface::return_type MujocoSystem::read(
     odom_initialized_ = true;
     RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized.");
   }
+
+  if (!scan_publisher_) {
+    scan_publisher_ = node_->create_publisher<sensor_msgs::msg::LaserScan>("/scan", 10);
+    RCLCPP_INFO(node_->get_logger(), "LaserScan publisher initialized.");
+  }
+
 
   // Position and orientation
   const double* pos = &mj_data_->xpos[3 * base_body_id];
@@ -142,6 +160,25 @@ hardware_interface::return_type MujocoSystem::read(
   mj_data_->qvel[qvel_start + 5] = last_cmd_vel_.angular.z;
 
   // ---- END OF ODOMETRY AND FAKE VELOCITY CONTROL ----
+
+  // ----- LIDAR -----
+
+  sensor_msgs::msg::LaserScan scan;
+  scan.header.stamp = node_->get_clock()->now();
+  scan.header.frame_id = "lidar_link";
+  scan.angle_min = -1.57;
+  scan.angle_max = 1.57;
+  scan.angle_increment = 3.14 / num_rays;  // dépend du nombre de capteurs
+  scan.range_min = 0.05;
+  scan.range_max = 30.0;
+  scan.ranges.resize(num_rays);
+
+  for (int i = 0; i < num_rays; ++i) {
+    int idx = mj_model_->sensor_adr[first_lidar_sensor + i];
+    scan.ranges[i] = mj_data_->sensordata[idx];
+  }
+
+  scan_publisher_->publish(scan);
 
   return hardware_interface::return_type::OK;
 }

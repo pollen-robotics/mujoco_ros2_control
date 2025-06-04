@@ -139,6 +139,8 @@ private:
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
 
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
+
   mjModel *mj_model_;
   mjData *mj_data_;
 
