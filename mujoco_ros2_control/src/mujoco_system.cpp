@@ -69,9 +69,8 @@ hardware_interface::return_type MujocoSystem::read(
     data.torque.data.z() = -mj_data_->sensordata[data.torque.mj_sensor_index + 2];
   }
 
-  // ---- ODOMÉTRIE ----
+  // ---- ODOMETRY AND FAKE VELOCITY CONTROL ----
 
-  // ID du body de base (ex: base_link)
   int base_body_id = mj_name2id(mj_model_, mjOBJ_BODY, "base_link");  // adapte le nom si nécessaire
   if (base_body_id < 0) {
     RCLCPP_WARN(rclcpp::get_logger("mujoco_system"), "Base body not found!");
@@ -80,16 +79,29 @@ hardware_interface::return_type MujocoSystem::read(
 
   if (!odom_initialized_) {
     node_ = rclcpp::Node::make_shared("mujoco_system_odom_node");
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(node_);
+    spin_thread_ = std::thread([this]() {
+      executor_->spin();
+    });
     odom_publisher_ = node_->create_publisher<nav_msgs::msg::Odometry>("/odom_mujoco", 10);
+    cmd_vel_sub_ = node_->create_subscription<geometry_msgs::msg::Twist>(
+    "/cmd_vel_gazebo", 10,
+    [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+      this->last_cmd_vel_ = *msg;
+      RCLCPP_ERROR(rclcpp::get_logger("mujoco_system"), "Received cmd_vel_fake: lin=%.2f %.2f %.2f ang=%.2f %.2f %.2f",
+        msg->linear.x, msg->linear.y, msg->linear.z,
+        msg->angular.x, msg->angular.y, msg->angular.z);
+    });
     odom_initialized_ = true;
     RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized.");
   }
 
-  // Position et orientation
+  // Position and orientation
   const double* pos = &mj_data_->xpos[3 * base_body_id];
   const double* quat = &mj_data_->xquat[4 * base_body_id];
 
-  // Vitesse linéaire et angulaire (dans la frame du corps)
+  // Linear and angular velocity (in body frame)
   const double* cvel = &mj_data_->cvel[6 * base_body_id]; // [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
 
   auto odom = nav_msgs::msg::Odometry();
@@ -109,7 +121,7 @@ hardware_interface::return_type MujocoSystem::read(
   odom.pose.pose.orientation.y = quat[2];
   odom.pose.pose.orientation.z = quat[3];
 
-  // Twist (dans la frame du robot)
+  // Twist (in robot frame)
   odom.twist.twist.linear.x = cvel[0];
   odom.twist.twist.linear.y = cvel[1];
   odom.twist.twist.linear.z = cvel[2];
@@ -117,9 +129,19 @@ hardware_interface::return_type MujocoSystem::read(
   odom.twist.twist.angular.y = cvel[4];
   odom.twist.twist.angular.z = cvel[5];
 
-  // Publie l'odom
+  // Publish odom
   odom_publisher_->publish(odom);
-  // ---- FIN ODOMÉTRIE ----
+
+  // Fake velocity control
+  int qvel_start = mj_model_->jnt_dofadr[mj_name2id(mj_model_, mjOBJ_JOINT, "mobile_base")];
+  mj_data_->qvel[qvel_start + 0] = last_cmd_vel_.linear.x;
+  mj_data_->qvel[qvel_start + 1] = last_cmd_vel_.linear.y;
+  mj_data_->qvel[qvel_start + 2] = last_cmd_vel_.linear.z;
+  mj_data_->qvel[qvel_start + 3] = last_cmd_vel_.angular.x;
+  mj_data_->qvel[qvel_start + 4] = last_cmd_vel_.angular.y;
+  mj_data_->qvel[qvel_start + 5] = last_cmd_vel_.angular.z;
+
+  // ---- END OF ODOMETRY AND FAKE VELOCITY CONTROL ----
 
   return hardware_interface::return_type::OK;
 }
@@ -548,6 +570,16 @@ control_toolbox::Pid MujocoSystem::get_pid_gains(
   }
 
   return control_toolbox::Pid(kp, ki, kd, i_max, i_min, enable_anti_windup);
+}
+
+MujocoSystem::~MujocoSystem() {
+  if (executor_) {
+    executor_->cancel();
+  }
+  if (spin_thread_.joinable()) {
+    spin_thread_.join();
+  }
+  RCLCPP_INFO(rclcpp::get_logger("mujoco_system"), "MujocoSystem destructor called, ROS executor stopped.");
 }
 }  // namespace mujoco_ros2_control
 

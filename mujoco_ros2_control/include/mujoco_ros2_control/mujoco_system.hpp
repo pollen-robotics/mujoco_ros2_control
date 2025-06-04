@@ -133,8 +133,16 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Node::SharedPtr node_;
 
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
+  geometry_msgs::msg::Twist last_cmd_vel_;
+
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
+  std::thread spin_thread_;
+
   mjModel *mj_model_;
   mjData *mj_data_;
+
+  ~MujocoSystem();
 
   rclcpp::Logger logger_;  // TODO(sangteak601): delete?
 };
