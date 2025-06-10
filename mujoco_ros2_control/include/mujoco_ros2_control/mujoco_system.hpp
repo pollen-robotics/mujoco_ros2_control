@@ -110,6 +110,12 @@ public:
     SensorData<Eigen::Vector3d> linear_velocity;
   };
 
+  struct RaySensorData
+  {
+    std::string name;
+    SensorData<double> distance;
+  };
+
 private:
   void register_joints(
     const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info);
@@ -128,6 +134,7 @@ private:
   std::vector<JointState> joint_states_;
   std::vector<FTSensorData> ft_sensor_data_;
   std::vector<IMUSensorData> imu_sensor_data_;
+  std::vector<RaySensorData> ray_sensor_data_;
 
   // Ajout pour publier l’odométrie
   bool odom_initialized_ = false;
