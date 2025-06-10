@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 #include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 
 #include "control_toolbox/pid.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"

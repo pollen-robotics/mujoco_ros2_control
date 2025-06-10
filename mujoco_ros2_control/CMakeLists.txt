@@ -23,6 +23,7 @@ find_package(glfw3 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(control_toolbox REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 set(THIS_PACKAGE_DEPENDS
   ament_cmake
@@ -35,6 +36,7 @@ set(THIS_PACKAGE_DEPENDS
   glfw3
   control_toolbox
   nav_msgs
+  sensor_msgs
 )
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
