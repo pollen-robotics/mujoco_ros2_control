@@ -109,10 +109,10 @@ hardware_interface::return_type MujocoSystem::read(
     RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized.");
   }
 
-  // if (!scan_publisher_) {
-  //   scan_publisher_ = node_->create_publisher<sensor_msgs::msg::LaserScan>("/scan", 10);
-  //   RCLCPP_INFO(node_->get_logger(), "LaserScan publisher initialized.");
-  // }
+  if (!scan_publisher_) {
+    scan_publisher_ = node_->create_publisher<sensor_msgs::msg::LaserScan>("/scan", 10);
+    RCLCPP_INFO(node_->get_logger(), "LaserScan publisher initialized.");
+  }
 
 
   // Position and orientation
@@ -163,35 +163,35 @@ hardware_interface::return_type MujocoSystem::read(
 
   // ----- LIDAR -----
 
-  // std::vector<float> ranges;
-  // std::vector<std::string> sensor_names;
+  std::vector<float> ranges;
+  std::vector<std::string> sensor_names;
 
-  // for (int i = 0; i < mj_model_->nsensor; ++i) {
-  //   if (mj_model_->sensor_type[i] == mjSENS_RANGEFINDER) {
-  //     int address = mj_model_->sensor_adr[i];
-  //     float distance = static_cast<float>(mj_data_->sensordata[address]);
-  //     ranges.push_back(distance);
-  //     sensor_names.push_back(mj_id2name(mj_model_, mjOBJ_SENSOR, i));
-  //   }
-  // }
+  for (int i = 0; i < mj_model_->nsensor; ++i) {
+    if (mj_model_->sensor_type[i] == mjSENS_RANGEFINDER) {
+      int address = mj_model_->sensor_adr[i];
+      float distance = static_cast<float>(mj_data_->sensordata[address]);
+      ranges.push_back(distance);
+      sensor_names.push_back(mj_id2name(mj_model_, mjOBJ_SENSOR, i));
+    }
+  }
 
-  // if (!ranges.empty()) {
-  //   auto now = node_->get_clock()->now();
-  //   sensor_msgs::msg::LaserScan scan_msg;
-  //   scan_msg.header.stamp = now;
-  //   scan_msg.header.frame_id = "lidar_link";  // Assure-toi que c’est bien le nom du frame dans ton TF
+  if (!ranges.empty()) {
+    auto now = node_->get_clock()->now();
+    sensor_msgs::msg::LaserScan scan_msg;
+    scan_msg.header.stamp = now;
+    scan_msg.header.frame_id = "lidar_link";  // Assure-toi que c’est bien le nom du frame dans ton TF
 
-  //   scan_msg.angle_min = -1.57f;  // à ajuster
-  //   scan_msg.angle_max = 1.57f;   // à ajuster
-  //   scan_msg.angle_increment = (scan_msg.angle_max - scan_msg.angle_min) / static_cast<float>(ranges.size());
-  //   scan_msg.time_increment = 0.0;
-  //   scan_msg.scan_time = 0.1f;
-  //   scan_msg.range_min = 0.05f;
-  //   scan_msg.range_max = 30.0f;
-  //   scan_msg.ranges = ranges;
+    scan_msg.angle_min = -1.57f;  // à ajuster
+    scan_msg.angle_max = 1.57f;   // à ajuster
+    scan_msg.angle_increment = (scan_msg.angle_max - scan_msg.angle_min) / static_cast<float>(ranges.size());
+    scan_msg.time_increment = 0.0;
+    scan_msg.scan_time = 0.1f;
+    scan_msg.range_min = 0.05f;
+    scan_msg.range_max = 30.0f;
+    scan_msg.ranges = ranges;
 
-  //   scan_publisher_->publish(scan_msg);
-  // }
+    scan_publisher_->publish(scan_msg);
+  }
 
   return hardware_interface::return_type::OK;
 }
