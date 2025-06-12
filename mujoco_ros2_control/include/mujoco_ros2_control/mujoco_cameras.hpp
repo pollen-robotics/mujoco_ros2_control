@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/opencv.hpp>
 #include <string>
 #include <vector>
 
@@ -30,6 +32,7 @@
 #include "rclcpp/node.hpp"
 #include "rclcpp/publisher.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
+#include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
 
 namespace mujoco_ros2_control
@@ -49,13 +52,14 @@ struct CameraData
   std::vector<float> depth_buffer;
   std::vector<float> depth_buffer_flipped;
 
-  sensor_msgs::msg::Image image;
+  sensor_msgs::msg::CompressedImage image;
   sensor_msgs::msg::Image depth_image;
   sensor_msgs::msg::CameraInfo camera_info;
 
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_image_pub;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr depth_camera_info_pub;
 };
 
 class MujocoCameras
