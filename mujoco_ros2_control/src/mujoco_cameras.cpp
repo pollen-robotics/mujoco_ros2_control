@@ -135,7 +135,7 @@ void MujocoCameras::register_cameras(const mjModel *mujoco_model)
       ""}},
     {"depth_cam_rgb", {
       "camera/color/image_raw/compressed",
-      "camera/depth/camera_info",
+      "camera/color/camera_info",
       "camera/depth/image_raw",
       "camera/depth/camera_info"}}
   };
