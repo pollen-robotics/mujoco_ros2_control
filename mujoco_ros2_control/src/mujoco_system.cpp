@@ -85,14 +85,15 @@ hardware_interface::return_type MujocoSystem::read(
       executor_->spin();
     });
     odom_publisher_ = node_->create_publisher<nav_msgs::msg::Odometry>("/odom_mujoco", 10);
-    cmd_vel_sub_ = node_->create_subscription<geometry_msgs::msg::Twist>(
-    "/cmd_vel_gazebo", 10,
-    [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
-      this->last_cmd_vel_ = *msg;
-      // RCLCPP_ERROR(rclcpp::get_logger("mujoco_system"), "Received cmd_vel_fake: lin=%.2f %.2f %.2f ang=%.2f %.2f %.2f",
-      //   msg->linear.x, msg->linear.y, msg->linear.z,
-      //   msg->angular.x, msg->angular.y, msg->angular.z);
-    });
+    // Used to move the base link
+    // cmd_vel_sub_ = node_->create_subscription<geometry_msgs::msg::Twist>(
+    // "/cmd_vel_gazebo", 10,
+    // [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+    //   this->last_cmd_vel_ = *msg;
+    //   // RCLCPP_ERROR(rclcpp::get_logger("mujoco_system"), "Received cmd_vel_fake: lin=%.2f %.2f %.2f ang=%.2f %.2f %.2f",
+    //   //   msg->linear.x, msg->linear.y, msg->linear.z,
+    //   //   msg->angular.x, msg->angular.y, msg->angular.z);
+    // });
     odom_initialized_ = true;
     RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized.");
   }
@@ -133,13 +134,13 @@ hardware_interface::return_type MujocoSystem::read(
   odom_publisher_->publish(odom);
 
   // Fake velocity control
-  int qvel_start = mj_model_->jnt_dofadr[mj_name2id(mj_model_, mjOBJ_JOINT, "mobile_base")];
-  mj_data_->qvel[qvel_start + 0] = last_cmd_vel_.linear.x;
-  mj_data_->qvel[qvel_start + 1] = last_cmd_vel_.linear.y;
-  mj_data_->qvel[qvel_start + 2] = last_cmd_vel_.linear.z;
-  mj_data_->qvel[qvel_start + 3] = last_cmd_vel_.angular.x;
-  mj_data_->qvel[qvel_start + 4] = last_cmd_vel_.angular.y;
-  mj_data_->qvel[qvel_start + 5] = last_cmd_vel_.angular.z;
+  // int qvel_start = mj_model_->jnt_dofadr[mj_name2id(mj_model_, mjOBJ_JOINT, "mobile_base")];
+  // mj_data_->qvel[qvel_start + 0] = last_cmd_vel_.linear.x;
+  // mj_data_->qvel[qvel_start + 1] = last_cmd_vel_.linear.y;
+  // mj_data_->qvel[qvel_start + 2] = last_cmd_vel_.linear.z;
+  // mj_data_->qvel[qvel_start + 3] = last_cmd_vel_.angular.x;
+  // mj_data_->qvel[qvel_start + 4] = last_cmd_vel_.angular.y;
+  // mj_data_->qvel[qvel_start + 5] = last_cmd_vel_.angular.z;
 
   // ---- END OF ODOMETRY AND FAKE VELOCITY CONTROL ----
 
