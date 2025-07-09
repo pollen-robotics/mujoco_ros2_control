@@ -145,13 +145,15 @@ int main(int argc, const char **argv)
       last_cam_update = simstart;
     }
 
-    // Log statistics every 5 seconds
+    // Log combined statistics every 5 seconds
     auto current_time = std::chrono::steady_clock::now();
     auto time_since_last_stats =
       std::chrono::duration<double>(current_time - last_stats_time).count();
 
     if (time_since_last_stats >= 5.0)
     {
+      RCLCPP_INFO(node->get_logger(), "=== Performance Stats (5s window) ===");
+
       // Rendering stats
       if (!rendering_times.empty())
       {
@@ -159,11 +161,12 @@ int main(int argc, const char **argv)
         double max_time = *std::max_element(rendering_times.begin(), rendering_times.end());
         double sum = std::accumulate(rendering_times.begin(), rendering_times.end(), 0.0);
         double mean_time = sum / rendering_times.size();
+        double fps = frame_count / time_since_last_stats;
 
         RCLCPP_INFO(
           node->get_logger(),
-          "Rendering Stats (5s): Frames=%d, Mean=%.2fms, Min=%.2fms, Max=%.2fms", frame_count,
-          mean_time, min_time, max_time);
+          "Rendering  | Frames: %3d | FPS: %5.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
+          frame_count, fps, mean_time, min_time, max_time);
       }
 
       // Control stats
@@ -173,11 +176,12 @@ int main(int argc, const char **argv)
         double max_time = *std::max_element(control_times.begin(), control_times.end());
         double sum = std::accumulate(control_times.begin(), control_times.end(), 0.0);
         double mean_time = sum / control_times.size();
+        double hz = control_times.size() / time_since_last_stats;
 
         RCLCPP_INFO(
           node->get_logger(),
-          "Control Stats (5s): Updates=%zu, Mean=%.2fms, Min=%.2fms, Max=%.2fms",
-          control_times.size(), mean_time, min_time, max_time);
+          "Control    | Updates:%4zu | Hz: %6.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
+          control_times.size(), hz, mean_time, min_time, max_time);
       }
 
       // Camera stats
@@ -187,11 +191,32 @@ int main(int argc, const char **argv)
         double max_time = *std::max_element(camera_times.begin(), camera_times.end());
         double sum = std::accumulate(camera_times.begin(), camera_times.end(), 0.0);
         double mean_time = sum / camera_times.size();
+        double hz = camera_update_count / time_since_last_stats;
 
         RCLCPP_INFO(
-          node->get_logger(), "Camera Stats (5s): Updates=%d, Mean=%.2fms, Min=%.2fms, Max=%.2fms",
-          camera_update_count, mean_time, min_time, max_time);
+          node->get_logger(),
+          "Camera     | Updates:%4d | Hz: %6.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
+          camera_update_count, hz, mean_time, min_time, max_time);
       }
+
+      // Summary line
+      double total_render_time =
+        rendering_times.empty()
+          ? 0.0
+          : std::accumulate(rendering_times.begin(), rendering_times.end(), 0.0);
+      double total_control_time =
+        control_times.empty() ? 0.0
+                              : std::accumulate(control_times.begin(), control_times.end(), 0.0);
+      double total_camera_time =
+        camera_times.empty() ? 0.0 : std::accumulate(camera_times.begin(), camera_times.end(), 0.0);
+      double total_time = total_render_time + total_control_time + total_camera_time;
+
+      RCLCPP_INFO(
+        node->get_logger(),
+        "Total CPU  | Render: %5.1fms | Control: %5.1fms | Camera: %5.1fms | Total: %5.1fms",
+        total_render_time, total_control_time, total_camera_time, total_time);
+
+      RCLCPP_INFO(node->get_logger(), "==========================================");
 
       // Reset for next window
       rendering_times.clear();
