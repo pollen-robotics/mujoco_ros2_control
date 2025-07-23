@@ -24,10 +24,64 @@
 
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
 
-
-
 namespace mujoco_ros2_control
 {
+
+// Object Publisher Implementation
+MujocoObjectPublisher::MujocoObjectPublisher(rclcpp::Node::SharedPtr &node)
+    : node_(node), last_publish_time_(0.0)
+{
+  object_poses_pub_ =
+    node_->create_publisher<geometry_msgs::msg::PoseStamped>("/mujoco/item_position", 10);
+}
+
+void MujocoObjectPublisher::init(mjModel *mujoco_model)
+{
+  body_names_.clear();
+
+  // Get all body names (skip world body at index 0)
+  for (int i = 1; i < mujoco_model->nbody; i++)
+  {
+    const char *name = mujoco_model->names + mujoco_model->name_bodyadr[i];
+    body_names_.push_back(std::string(name));
+  }
+
+  RCLCPP_INFO(
+    node_->get_logger(), "Object publisher initialized for %zu bodies", body_names_.size());
+}
+
+void MujocoObjectPublisher::update(mjModel *mujoco_model, mjData *mujoco_data, double sim_time)
+{
+  // Publish at 10Hz
+  if (sim_time - last_publish_time_ < 1.0 / PUBLISH_RATE) return;
+
+  auto time_stamp = node_->now();
+
+  // Publish each body pose individually with name in frame_id
+  for (int i = 1; i < mujoco_model->nbody; i++)
+  {
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.stamp = time_stamp;
+    pose_msg.header.frame_id = body_names_[i - 1];  // Body name as frame_id
+
+    // Position (xpos is nbody x 3 array)
+    pose_msg.pose.position.x = mujoco_data->xpos[3 * i + 0];
+    pose_msg.pose.position.y = mujoco_data->xpos[3 * i + 1];
+    pose_msg.pose.position.z = mujoco_data->xpos[3 * i + 2];
+
+    // Orientation (xquat is nbody x 4 array, stored as w,x,y,z)
+    pose_msg.pose.orientation.w = mujoco_data->xquat[4 * i + 0];
+    pose_msg.pose.orientation.x = mujoco_data->xquat[4 * i + 1];
+    pose_msg.pose.orientation.y = mujoco_data->xquat[4 * i + 2];
+    pose_msg.pose.orientation.z = mujoco_data->xquat[4 * i + 3];
+
+    object_poses_pub_->publish(pose_msg);
+  }
+
+  last_publish_time_ = sim_time;
+}
+
+// Main MujocoRos2Control Implementation
 MujocoRos2Control::MujocoRos2Control(
   rclcpp::Node::SharedPtr &node, mjModel *mujoco_model, mjData *mujoco_data)
     : node_(node),
@@ -37,6 +91,8 @@ MujocoRos2Control::MujocoRos2Control(
       control_period_(rclcpp::Duration(1, 0)),
       last_update_sim_time_ros_(0, 0, RCL_ROS_TIME)
 {
+  // Initialize object publisher
+  object_publisher_ = std::make_unique<MujocoObjectPublisher>(node);
 }
 
 MujocoRos2Control::~MujocoRos2Control()
@@ -171,8 +227,9 @@ void MujocoRos2Control::init()
   }
 
   auto update_rate = controller_manager_->get_parameter("update_rate").as_int();
-  control_period_ = rclcpp::Duration(std::chrono::duration_cast<std::chrono::nanoseconds>(
-    std::chrono::duration<double>(1.0 / static_cast<double>(update_rate))));
+  control_period_ = rclcpp::Duration(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / static_cast<double>(update_rate))));
 
   // Force setting of use_sime_time parameter
   controller_manager_->set_parameter(
@@ -187,6 +244,9 @@ void MujocoRos2Control::init()
     }
   };
   cm_thread_ = std::thread(spin);
+
+  // Initialize object publisher
+  object_publisher_->init(mj_model_);
 }
 
 void MujocoRos2Control::update()
@@ -198,10 +258,7 @@ void MujocoRos2Control::update()
 
   rclcpp::Time sim_time_ros(sim_time_sec, sim_time_nanosec, RCL_ROS_TIME);
   rclcpp::Duration sim_period = sim_time_ros - last_update_sim_time_ros_;
-  // mju_error("DEBUG UPDATE: %f",sim_time_nanosec );
 
-
-  // RCLCPP_ERROR(logger_, "DEBUG TICK: %f",sim_time );
   publish_sim_time(sim_time_ros);
 
   mj_step1(mj_model_, mj_data_);
@@ -216,11 +273,13 @@ void MujocoRos2Control::update()
   controller_manager_->write(sim_time_ros, sim_period);
 
   mj_step2(mj_model_, mj_data_);
+
+  // Update object poses publisher
+  object_publisher_->update(mj_model_, mj_data_, sim_time);
 }
 
 void MujocoRos2Control::publish_sim_time(rclcpp::Time sim_time)
 {
-  // TODO(sangteak601)
   rosgraph_msgs::msg::Clock sim_time_msg;
   sim_time_msg.clock = sim_time;
   clock_publisher_->publish(sim_time_msg);
