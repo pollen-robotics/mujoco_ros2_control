@@ -95,16 +95,20 @@ int main(int argc, const char **argv)
   int frame_count = 0;
   int camera_update_count = 0;
 
-  // run main loop, target real-time simulation and 60 fps rendering with cameras around 6 hz
-  mjtNum last_cam_update = mujoco_data->time;
+  // Frequency control variables using real time
+  auto last_control_update = std::chrono::steady_clock::now();
+  auto last_render_update = std::chrono::steady_clock::now();
+  auto last_cam_update = std::chrono::steady_clock::now();
+  constexpr double CONTROL_FREQ = 100.0;
+  constexpr double RENDER_FREQ = 30.0;
+  constexpr double CAMERA_FREQ = 5.0;
+
+  // run main loop with enforced frequencies using real time
   while (rclcpp::ok() && !rendering->is_close_flag_raised())
   {
-    // advance interactive simulation for 1/60 sec
-    //  Assuming MuJoCo can simulate faster than real-time, which it usually can,
-    //  this loop will finish on time for the next frame to be rendered at 60 fps.
-    //  Otherwise add a cpu timer and exit this loop when it is time to render.
-    mjtNum simstart = mujoco_data->time;
-    while (mujoco_data->time - simstart < 1.0 / 60.0)
+    auto now = std::chrono::steady_clock::now();
+
+    if (std::chrono::duration<double>(now - last_control_update).count() >= 1.0 / CONTROL_FREQ)
     {
       auto control_start = std::chrono::steady_clock::now();
       mujoco_control.update();
@@ -114,24 +118,24 @@ int main(int argc, const char **argv)
         std::chrono::duration<double, std::milli>(control_end - control_start).count();
       control_times.push_back(control_time_ms);
 
-      auto end = std::chrono::system_clock::now();
-      std::chrono::duration<double> elapsed_seconds = end - start;
-      // RCLCPP_ERROR(node->get_logger(), "DEBUG REAL TICK: %f",elapsed_seconds );
+      last_control_update = now;
     }
 
-    // Measure rendering time
-    auto render_start = std::chrono::steady_clock::now();
-    rendering->update();
-    auto render_end = std::chrono::steady_clock::now();
+    if (std::chrono::duration<double>(now - last_render_update).count() >= 1.0 / RENDER_FREQ)
+    {
+      auto render_start = std::chrono::steady_clock::now();
+      rendering->update();
+      auto render_end = std::chrono::steady_clock::now();
 
-    double render_time_ms =
-      std::chrono::duration<double, std::milli>(render_end - render_start).count();
-    rendering_times.push_back(render_time_ms);
-    frame_count++;
+      double render_time_ms =
+        std::chrono::duration<double, std::milli>(render_end - render_start).count();
+      rendering_times.push_back(render_time_ms);
+      frame_count++;
 
-    // Updating cameras at ~6 Hz
-    // TODO(eholum): Break control and rendering into separate processes
-    if (simstart - last_cam_update > 1.0 / 6.0)
+      last_render_update = now;
+    }
+
+    if (std::chrono::duration<double>(now - last_cam_update).count() >= 1.0 / CAMERA_FREQ)
     {
       auto camera_start = std::chrono::steady_clock::now();
       cameras->update(mujoco_model, mujoco_data);
@@ -142,11 +146,11 @@ int main(int argc, const char **argv)
       camera_times.push_back(camera_time_ms);
       camera_update_count++;
 
-      last_cam_update = simstart;
+      last_cam_update = now;
     }
 
     // Log combined statistics every 5 seconds
-    auto current_time = std::chrono::steady_clock::now();
+    auto current_time = now;
     auto time_since_last_stats =
       std::chrono::duration<double>(current_time - last_stats_time).count();
 
