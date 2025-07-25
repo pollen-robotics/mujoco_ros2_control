@@ -49,6 +49,7 @@ private:
   rclcpp::Node::SharedPtr node_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr object_poses_pub_;
   std::vector<std::string> body_names_;
+  std::vector<int> body_indices_;
   double last_publish_time_;
   static constexpr double PUBLISH_RATE = 10.0;  // Hz
 };
