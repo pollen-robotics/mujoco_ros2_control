@@ -99,7 +99,7 @@ int main(int argc, const char **argv)
   auto last_control_update = std::chrono::steady_clock::now();
   auto last_render_update = std::chrono::steady_clock::now();
   auto last_cam_update = std::chrono::steady_clock::now();
-  constexpr double CONTROL_FREQ = 100.0;
+  constexpr double CONTROL_FREQ = 1000.0;
   constexpr double RENDER_FREQ = 30.0;
   constexpr double CAMERA_FREQ = 5.0;
 
