@@ -38,16 +38,94 @@ MujocoObjectPublisher::MujocoObjectPublisher(rclcpp::Node::SharedPtr &node)
 void MujocoObjectPublisher::init(mjModel *mujoco_model)
 {
   body_names_.clear();
+  body_indices_.clear();
 
-  // Get all body names (skip world body at index 0)
-  for (int i = 1; i < mujoco_model->nbody; i++)
+  // Look for custom text field with tracked bodies list
+  std::set<std::string> tracked_body_names;
+  bool found_tracked_list = false;
+
+  for (int i = 0; i < mujoco_model->ntext; i++)
+  {
+    const char *name = mujoco_model->names + mujoco_model->name_textadr[i];
+    if (std::string(name) == "tracked_bodies")
+    {
+      const char *data = mujoco_model->text_data + mujoco_model->text_adr[i];
+      std::string body_list(data);
+
+      // Parse comma-separated list
+      std::stringstream ss(body_list);
+      std::string body_name;
+      while (std::getline(ss, body_name, ','))
+      {
+        // Trim whitespace
+        body_name.erase(0, body_name.find_first_not_of(" \t"));
+        body_name.erase(body_name.find_last_not_of(" \t") + 1);
+        if (!body_name.empty())
+        {
+          tracked_body_names.insert(body_name);
+        }
+      }
+      found_tracked_list = true;
+      RCLCPP_INFO(
+        node_->get_logger(), "Found tracked_bodies list with %zu bodies",
+        tracked_body_names.size());
+      break;
+    }
+  }
+
+  if (!found_tracked_list)
+  {
+    RCLCPP_INFO(
+      node_->get_logger(), "No 'tracked_bodies' custom text found - no bodies will be tracked");
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Add <custom><text name=\"tracked_bodies\" data=\"body1,body2,body3\"/></custom> to your XML "
+      "to track specific bodies");
+    return;
+  }
+
+  // Find and add only the bodies specified in the tracked list
+  for (int i = 1; i < mujoco_model->nbody; i++)  // Skip world body at index 0
   {
     const char *name = mujoco_model->names + mujoco_model->name_bodyadr[i];
-    body_names_.push_back(std::string(name));
+    std::string body_name = std::string(name);
+
+    if (tracked_body_names.find(body_name) != tracked_body_names.end())
+    {
+      body_names_.push_back(body_name);
+      body_indices_.push_back(i);
+    }
   }
 
   RCLCPP_INFO(
-    node_->get_logger(), "Object publisher initialized for %zu bodies", body_names_.size());
+    node_->get_logger(), "Object publisher initialized for %zu tracked bodies", body_names_.size());
+
+  // Log all tracked body names for debugging
+  for (size_t i = 0; i < body_names_.size(); i++)
+  {
+    RCLCPP_INFO(
+      node_->get_logger(), "Tracking body %d: '%s'", body_indices_[i], body_names_[i].c_str());
+  }
+
+  // Warn about bodies in the list that weren't found in the model
+  for (const auto &requested_body : tracked_body_names)
+  {
+    bool found = false;
+    for (const auto &tracked_body : body_names_)
+    {
+      if (tracked_body == requested_body)
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+    {
+      RCLCPP_WARN(
+        node_->get_logger(), "Requested body '%s' not found in MuJoCo model",
+        requested_body.c_str());
+    }
+  }
 }
 
 void MujocoObjectPublisher::update(mjModel *mujoco_model, mjData *mujoco_data, double sim_time)
@@ -57,12 +135,14 @@ void MujocoObjectPublisher::update(mjModel *mujoco_model, mjData *mujoco_data, d
 
   auto time_stamp = node_->now();
 
-  // Publish each body pose individually with name in frame_id
-  for (int i = 1; i < mujoco_model->nbody; i++)
+  // Publish only the filtered/tracked bodies
+  for (size_t idx = 0; idx < body_names_.size(); idx++)
   {
+    int i = body_indices_[idx];  // Get the original MuJoCo body index
+
     geometry_msgs::msg::PoseStamped pose_msg;
     pose_msg.header.stamp = time_stamp;
-    pose_msg.header.frame_id = body_names_[i - 1];  // Body name as frame_id
+    pose_msg.header.frame_id = body_names_[idx];  // Body name as frame_id
 
     // Position (xpos is nbody x 3 array)
     pose_msg.pose.position.x = mujoco_data->xpos[3 * i + 0];
