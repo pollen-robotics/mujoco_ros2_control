@@ -23,6 +23,8 @@
   <depend>urdf</depend>
   <depend>control_toolbox</depend>
   <depend>nav_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>opencv2</depend>
   <exec_depend>ros2controlcli</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>effort_controllers</exec_depend>

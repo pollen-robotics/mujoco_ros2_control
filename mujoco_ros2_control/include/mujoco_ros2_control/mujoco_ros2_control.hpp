@@ -25,9 +25,11 @@
 #include <string>
 
 #include "controller_manager/controller_manager.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rosgraph_msgs/msg/clock.hpp"
+#include "std_msgs/msg/string.hpp"
 
 #include "mujoco/mujoco.h"
 
@@ -35,6 +37,22 @@
 
 namespace mujoco_ros2_control
 {
+
+class MujocoObjectPublisher
+{
+public:
+  MujocoObjectPublisher(rclcpp::Node::SharedPtr &node);
+  void init(mjModel *mujoco_model);
+  void update(mjModel *mujoco_model, mjData *mujoco_data, double sim_time);
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr object_poses_pub_;
+  std::vector<std::string> body_names_;
+  std::vector<int> body_indices_;
+  double last_publish_time_;
+  static constexpr double PUBLISH_RATE = 10.0;  // Hz
+};
 class MujocoRos2Control
 {
 public:
@@ -49,6 +67,7 @@ private:
   rclcpp::Node::SharedPtr node_;
   mjModel *mj_model_;
   mjData *mj_data_;
+  std::unique_ptr<MujocoObjectPublisher> object_publisher_;
 
   rclcpp::Logger logger_;
   std::shared_ptr<pluginlib::ClassLoader<MujocoSystemInterface>> robot_hw_sim_loader_;

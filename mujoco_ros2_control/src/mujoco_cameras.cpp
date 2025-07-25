@@ -72,19 +72,27 @@ void MujocoCameras::update(mjModel *mujoco_model, mjData *mujoco_data)
         camera.depth_buffer_flipped[idx_flipped] = camera.depth_buffer[idx];
       }
     }
+
     // Copy flipped data into the depth image message, floats -> unsigned chars
     std::memcpy(
       &camera.depth_image.data[0], camera.depth_buffer_flipped.data(),
       camera.depth_image.data.size());
 
-    // OpenGL's coordinate system's origin is in the bottom left, so we invert the images row-by-row
-    auto row_size = camera.width * 3;
-    for (uint32_t h = 0; h < camera.height; h++)
-    {
-      auto src_idx = h * row_size;
-      auto dest_idx = (camera.height - 1 - h) * row_size;
-      std::memcpy(&camera.image.data[dest_idx], &camera.image_buffer[src_idx], row_size);
-    }
+    // Process RGB image
+    // Convert raw RGB data to OpenCV Mat (note: MuJoCo uses RGB, OpenCV uses BGR)
+    cv::Mat rgb_image(camera.height, camera.width, CV_8UC3, camera.image_buffer.data());
+    cv::Mat rgb_flipped, bgr_flipped;
+    cv::flip(rgb_image, rgb_flipped, 0);  // Flip vertically (MuJoCo images are upside down)
+    cv::cvtColor(rgb_flipped, bgr_flipped, cv::COLOR_RGB2BGR);  // Convert RGB to BGR for JPEG
+
+    // Compress BGR to JPEG (JPEG expects BGR format)
+    std::vector<uchar> compressed_rgb_data;
+    std::vector<int> jpeg_params = {cv::IMWRITE_JPEG_QUALITY, 90};
+    cv::imencode(".jpg", bgr_flipped, compressed_rgb_data, jpeg_params);
+
+    // Update compressed image message
+    camera.image.data = compressed_rgb_data;
+    camera.image.format = "jpeg";  // This is important for RViz to recognize the format
 
     // Publish images and camera info
     auto time = node_->now();
@@ -95,6 +103,7 @@ void MujocoCameras::update(mjModel *mujoco_model, mjData *mujoco_data)
     camera.image_pub->publish(camera.image);
     camera.depth_image_pub->publish(camera.depth_image);
     camera.camera_info_pub->publish(camera.camera_info);
+    camera.depth_camera_info_pub->publish(camera.camera_info);  // Same camera info for both
   }
 }
 
@@ -106,14 +115,39 @@ void MujocoCameras::close()
 
 void MujocoCameras::register_cameras(const mjModel *mujoco_model)
 {
-  cameras_.resize(0);
+  struct TopicRemap {
+    std::string image_topic;
+    std::string camera_info_topic;
+    std::string depth_image_topic;
+    std::string depth_camera_info_topic;
+  };
+
+  const std::unordered_map<std::string, TopicRemap> remap_table = {
+    {"left_camera", {
+      "teleop_camera/left_image/image_raw/compressed",
+      "teleop_camera/left_image/image_raw/camera_info",
+      "",
+      ""}},
+    {"right_camera", {
+      "teleop_camera/right_image/image_raw/compressed",
+      "teleop_camera/right_image/image_raw/camera_info",
+      "",
+      ""}},
+    {"depth_cam_rgb", {
+      "camera/color/image_raw/compressed",
+      "camera/color/camera_info",
+      "camera/depth/image_raw",
+      "camera/depth/camera_info"}}
+  };
+
+  cameras_.clear();
+
   for (auto i = 0; i < mujoco_model->ncam; ++i)
   {
     const char *cam_name = mujoco_model->names + mujoco_model->name_camadr[i];
     const int *cam_resolution = mujoco_model->cam_resolution + 2 * i;
     const mjtNum cam_fovy = mujoco_model->cam_fovy[i];
 
-    // Construct CameraData wrapper and set defaults
     CameraData camera;
     camera.name = cam_name;
     camera.mjv_cam.type = mjCAMERA_FIXED;
@@ -121,28 +155,44 @@ void MujocoCameras::register_cameras(const mjModel *mujoco_model)
     camera.width = static_cast<uint32_t>(cam_resolution[0]);
     camera.height = static_cast<uint32_t>(cam_resolution[1]);
     camera.viewport = {0, 0, cam_resolution[0], cam_resolution[1]};
-
-    // TODO(eholum): Ensure that the camera is attached to the expected pose.
-    // For now assume that's the case.
     camera.frame_name = camera.name + "_optical_frame";
 
-    // Configure publishers
-    camera.image_pub = node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/color", 1);
-    camera.depth_image_pub =
-      node_->create_publisher<sensor_msgs::msg::Image>(camera.name + "/depth", 1);
-    camera.camera_info_pub =
-      node_->create_publisher<sensor_msgs::msg::CameraInfo>(camera.name + "/camera_info", 1);
+    auto remap_it = remap_table.find(camera.name);
+    std::string image_topic = remap_it != remap_table.end() && !remap_it->second.image_topic.empty()
+      ? remap_it->second.image_topic
+      : camera.name + "/color/compressed";
 
-    // Setup contaienrs for color image data
+    std::string camera_info_topic = remap_it != remap_table.end() && !remap_it->second.camera_info_topic.empty()
+      ? remap_it->second.camera_info_topic
+      : camera.name + "/color/camera_info";
+
+    std::string depth_image_topic = remap_it != remap_table.end() && !remap_it->second.depth_image_topic.empty()
+      ? remap_it->second.depth_image_topic
+      : camera.name + "/depth/image";
+
+    std::string depth_camera_info_topic = remap_it != remap_table.end() && !remap_it->second.depth_camera_info_topic.empty()
+      ? remap_it->second.depth_camera_info_topic
+      : camera.name + "/depth/camera_info";
+
+    // Publishers
+    camera.image_pub = node_->create_publisher<sensor_msgs::msg::CompressedImage>(
+      image_topic, 1);
+
+    camera.camera_info_pub = node_->create_publisher<sensor_msgs::msg::CameraInfo>(
+      camera_info_topic, 1);
+
+    camera.depth_image_pub = node_->create_publisher<sensor_msgs::msg::Image>(
+      depth_image_topic, 1);
+
+    camera.depth_camera_info_pub = node_->create_publisher<sensor_msgs::msg::CameraInfo>(
+      depth_camera_info_topic, 1);
+
+    // Setup containers for color image data
     camera.image.header.frame_id = camera.frame_name;
+    camera.image.format = "jpeg";  // Set format early
 
     const auto image_size = camera.width * camera.height * 3;
     camera.image_buffer.resize(image_size);
-    camera.image.data.resize(image_size);
-    camera.image.width = camera.width;
-    camera.image.height = camera.height;
-    camera.image.step = camera.width * 3;
-    camera.image.encoding = sensor_msgs::image_encodings::RGB8;
 
     // Depth image data
     camera.depth_image.header.frame_id = camera.frame_name;
@@ -164,14 +214,27 @@ void MujocoCameras::register_cameras(const mjModel *mujoco_model)
     camera.camera_info.p.fill(0.0);
     camera.camera_info.d.resize(5, 0.0);
 
+    // Calculate focal length from field of view
     double focal_scaling = (1.0 / std::tan((cam_fovy * M_PI / 180.0) / 2.0)) * camera.height / 2.0;
-    camera.camera_info.k[0] = camera.camera_info.p[0] = focal_scaling;
-    camera.camera_info.k[2] = camera.camera_info.p[2] = static_cast<double>(camera.width) / 2.0;
-    camera.camera_info.k[4] = camera.camera_info.p[5] = focal_scaling;
-    camera.camera_info.k[5] = camera.camera_info.p[6] = static_cast<double>(camera.height) / 2.0;
-    camera.camera_info.k[8] = camera.camera_info.p[10] = 1.0;
 
-    // Add to list of cameras
+    // Fill camera intrinsic matrix K
+    camera.camera_info.k[0] = focal_scaling;                             // fx
+    camera.camera_info.k[2] = static_cast<double>(camera.width) / 2.0;   // cx
+    camera.camera_info.k[4] = focal_scaling;                             // fy
+    camera.camera_info.k[5] = static_cast<double>(camera.height) / 2.0;  // cy
+    camera.camera_info.k[8] = 1.0;
+
+    camera.camera_info.r[0] = 1.0;
+    camera.camera_info.r[4] = 1.0;
+    camera.camera_info.r[8] = 1.0;
+
+    // Fill projection matrix P
+    camera.camera_info.p[0] = focal_scaling;                             // fx
+    camera.camera_info.p[2] = static_cast<double>(camera.width) / 2.0;   // cx
+    camera.camera_info.p[5] = focal_scaling;                             // fy
+    camera.camera_info.p[6] = static_cast<double>(camera.height) / 2.0;  // cy
+    camera.camera_info.p[10] = 1.0;
+
     cameras_.push_back(camera);
   }
 }

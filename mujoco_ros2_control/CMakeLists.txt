@@ -23,6 +23,8 @@ find_package(glfw3 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(control_toolbox REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED)
 
 set(THIS_PACKAGE_DEPENDS
   ament_cmake
@@ -80,7 +82,8 @@ add_executable(mujoco_ros2_control
   src/mujoco_cameras.cpp
 )
 ament_target_dependencies(mujoco_ros2_control ${THIS_PACKAGE_DEPENDS})
-target_link_libraries(mujoco_ros2_control ${MUJOCO_LIB} glfw)
+target_link_libraries(mujoco_ros2_control ${MUJOCO_LIB} glfw   cv_bridge::cv_bridge
+)
 target_include_directories(mujoco_ros2_control
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -25,7 +25,9 @@
 #include "mujoco_ros2_control/mujoco_rendering.hpp"
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <vector>
 
 // MuJoCo data structures
 mjModel *mujoco_model = nullptr;
@@ -83,33 +85,150 @@ int main(int argc, const char **argv)
   cameras->init(mujoco_model);
 
   auto start = std::chrono::system_clock::now();
-    // Some computation here
+  // Some computation here
 
+  // Timing variables for rendering, camera, and control
+  std::vector<double> rendering_times;
+  std::vector<double> camera_times;
+  std::vector<double> control_times;
+  auto last_stats_time = std::chrono::steady_clock::now();
+  int frame_count = 0;
+  int camera_update_count = 0;
 
-  // run main loop, target real-time simulation and 60 fps rendering with cameras around 6 hz
-  mjtNum last_cam_update = mujoco_data->time;
+  // Frequency control variables using real time
+  auto last_control_update = std::chrono::steady_clock::now();
+  auto last_render_update = std::chrono::steady_clock::now();
+  auto last_cam_update = std::chrono::steady_clock::now();
+  constexpr double CONTROL_FREQ = 1000.0;
+  constexpr double RENDER_FREQ = 30.0;
+  constexpr double CAMERA_FREQ = 5.0;
+
+  // run main loop with enforced frequencies using real time
   while (rclcpp::ok() && !rendering->is_close_flag_raised())
   {
-    // advance interactive simulation for 1/60 sec
-    //  Assuming MuJoCo can simulate faster than real-time, which it usually can,
-    //  this loop will finish on time for the next frame to be rendered at 60 fps.
-    //  Otherwise add a cpu timer and exit this loop when it is time to render.
-    mjtNum simstart = mujoco_data->time;
-    while (mujoco_data->time - simstart < 1.0 / 60.0)
-    {
-      mujoco_control.update();
-      auto end = std::chrono::system_clock::now();
-      std::chrono::duration<double> elapsed_seconds = end - start;
-      // RCLCPP_ERROR(node->get_logger(), "DEBUG REAL TICK: %f",elapsed_seconds );
-    }
-    rendering->update();
+    auto now = std::chrono::steady_clock::now();
 
-    // Updating cameras at ~6 Hz
-    // TODO(eholum): Break control and rendering into separate processes
-    if (simstart - last_cam_update > 1.0 / 6.0)
+    if (std::chrono::duration<double>(now - last_control_update).count() >= 1.0 / CONTROL_FREQ)
     {
+      auto control_start = std::chrono::steady_clock::now();
+      mujoco_control.update();
+      auto control_end = std::chrono::steady_clock::now();
+
+      double control_time_ms =
+        std::chrono::duration<double, std::milli>(control_end - control_start).count();
+      control_times.push_back(control_time_ms);
+
+      last_control_update = now;
+    }
+
+    if (std::chrono::duration<double>(now - last_render_update).count() >= 1.0 / RENDER_FREQ)
+    {
+      auto render_start = std::chrono::steady_clock::now();
+      rendering->update();
+      auto render_end = std::chrono::steady_clock::now();
+
+      double render_time_ms =
+        std::chrono::duration<double, std::milli>(render_end - render_start).count();
+      rendering_times.push_back(render_time_ms);
+      frame_count++;
+
+      last_render_update = now;
+    }
+
+    if (std::chrono::duration<double>(now - last_cam_update).count() >= 1.0 / CAMERA_FREQ)
+    {
+      auto camera_start = std::chrono::steady_clock::now();
       cameras->update(mujoco_model, mujoco_data);
-      last_cam_update = simstart;
+      auto camera_end = std::chrono::steady_clock::now();
+
+      double camera_time_ms =
+        std::chrono::duration<double, std::milli>(camera_end - camera_start).count();
+      camera_times.push_back(camera_time_ms);
+      camera_update_count++;
+
+      last_cam_update = now;
+    }
+
+    // Log combined statistics every 5 seconds
+    auto current_time = now;
+    auto time_since_last_stats =
+      std::chrono::duration<double>(current_time - last_stats_time).count();
+
+    if (time_since_last_stats >= 60.0)
+    {
+      RCLCPP_INFO(node->get_logger(), "=== Performance Stats (60s window) ===");
+
+      // Rendering stats
+      if (!rendering_times.empty())
+      {
+        double min_time = *std::min_element(rendering_times.begin(), rendering_times.end());
+        double max_time = *std::max_element(rendering_times.begin(), rendering_times.end());
+        double sum = std::accumulate(rendering_times.begin(), rendering_times.end(), 0.0);
+        double mean_time = sum / rendering_times.size();
+        double fps = frame_count / time_since_last_stats;
+
+        RCLCPP_INFO(
+          node->get_logger(),
+          "Rendering  | Frames: %3d | FPS: %5.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
+          frame_count, fps, mean_time, min_time, max_time);
+      }
+
+      // Control stats
+      if (!control_times.empty())
+      {
+        double min_time = *std::min_element(control_times.begin(), control_times.end());
+        double max_time = *std::max_element(control_times.begin(), control_times.end());
+        double sum = std::accumulate(control_times.begin(), control_times.end(), 0.0);
+        double mean_time = sum / control_times.size();
+        double hz = control_times.size() / time_since_last_stats;
+
+        RCLCPP_INFO(
+          node->get_logger(),
+          "Control    | Updates:%4zu | Hz: %6.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
+          control_times.size(), hz, mean_time, min_time, max_time);
+      }
+
+      // Camera stats
+      if (!camera_times.empty())
+      {
+        double min_time = *std::min_element(camera_times.begin(), camera_times.end());
+        double max_time = *std::max_element(camera_times.begin(), camera_times.end());
+        double sum = std::accumulate(camera_times.begin(), camera_times.end(), 0.0);
+        double mean_time = sum / camera_times.size();
+        double hz = camera_update_count / time_since_last_stats;
+
+        RCLCPP_INFO(
+          node->get_logger(),
+          "Camera     | Updates:%4d | Hz: %6.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
+          camera_update_count, hz, mean_time, min_time, max_time);
+      }
+
+      // Summary line
+      double total_render_time =
+        rendering_times.empty()
+          ? 0.0
+          : std::accumulate(rendering_times.begin(), rendering_times.end(), 0.0);
+      double total_control_time =
+        control_times.empty() ? 0.0
+                              : std::accumulate(control_times.begin(), control_times.end(), 0.0);
+      double total_camera_time =
+        camera_times.empty() ? 0.0 : std::accumulate(camera_times.begin(), camera_times.end(), 0.0);
+      double total_time = total_render_time + total_control_time + total_camera_time;
+
+      RCLCPP_INFO(
+        node->get_logger(),
+        "Total CPU  | Render: %5.1fms | Control: %5.1fms | Camera: %5.1fms | Total: %5.1fms",
+        total_render_time, total_control_time, total_camera_time, total_time);
+
+      RCLCPP_INFO(node->get_logger(), "==========================================");
+
+      // Reset for next window
+      rendering_times.clear();
+      control_times.clear();
+      camera_times.clear();
+      frame_count = 0;
+      camera_update_count = 0;
+      last_stats_time = current_time;
     }
   }
 

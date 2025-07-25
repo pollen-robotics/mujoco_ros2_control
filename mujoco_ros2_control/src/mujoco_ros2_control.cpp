@@ -24,10 +24,146 @@
 
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
 
-
-
 namespace mujoco_ros2_control
 {
+
+// Object Publisher Implementation
+MujocoObjectPublisher::MujocoObjectPublisher(rclcpp::Node::SharedPtr &node)
+    : node_(node), last_publish_time_(0.0)
+{
+  object_poses_pub_ =
+    node_->create_publisher<geometry_msgs::msg::PoseStamped>("/mujoco/item_position", 10);
+}
+
+void MujocoObjectPublisher::init(mjModel *mujoco_model)
+{
+  body_names_.clear();
+  body_indices_.clear();
+
+  // Look for custom text field with tracked bodies list
+  std::set<std::string> tracked_body_names;
+  bool found_tracked_list = false;
+
+  for (int i = 0; i < mujoco_model->ntext; i++)
+  {
+    const char *name = mujoco_model->names + mujoco_model->name_textadr[i];
+    if (std::string(name) == "tracked_bodies")
+    {
+      const char *data = mujoco_model->text_data + mujoco_model->text_adr[i];
+      std::string body_list(data);
+
+      // Parse comma-separated list
+      std::stringstream ss(body_list);
+      std::string body_name;
+      while (std::getline(ss, body_name, ','))
+      {
+        // Trim whitespace
+        body_name.erase(0, body_name.find_first_not_of(" \t"));
+        body_name.erase(body_name.find_last_not_of(" \t") + 1);
+        if (!body_name.empty())
+        {
+          tracked_body_names.insert(body_name);
+        }
+      }
+      found_tracked_list = true;
+      RCLCPP_INFO(
+        node_->get_logger(), "Found tracked_bodies list with %zu bodies",
+        tracked_body_names.size());
+      break;
+    }
+  }
+
+  if (!found_tracked_list)
+  {
+    RCLCPP_INFO(
+      node_->get_logger(), "No 'tracked_bodies' custom text found - no bodies will be tracked");
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Add <custom><text name=\"tracked_bodies\" data=\"body1,body2,body3\"/></custom> to your XML "
+      "to track specific bodies");
+    return;
+  }
+
+  // Find and add only the bodies specified in the tracked list
+  for (int i = 1; i < mujoco_model->nbody; i++)  // Skip world body at index 0
+  {
+    const char *name = mujoco_model->names + mujoco_model->name_bodyadr[i];
+    std::string body_name = std::string(name);
+
+    if (tracked_body_names.find(body_name) != tracked_body_names.end())
+    {
+      body_names_.push_back(body_name);
+      body_indices_.push_back(i);
+    }
+  }
+
+  RCLCPP_INFO(
+    node_->get_logger(), "Object publisher initialized for %zu tracked bodies", body_names_.size());
+
+  // Log all tracked body names for debugging
+  for (size_t i = 0; i < body_names_.size(); i++)
+  {
+    RCLCPP_INFO(
+      node_->get_logger(), "Tracking body %d: '%s'", body_indices_[i], body_names_[i].c_str());
+  }
+
+  // Warn about bodies in the list that weren't found in the model
+  for (const auto &requested_body : tracked_body_names)
+  {
+    bool found = false;
+    for (const auto &tracked_body : body_names_)
+    {
+      if (tracked_body == requested_body)
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+    {
+      RCLCPP_WARN(
+        node_->get_logger(), "Requested body '%s' not found in MuJoCo model",
+        requested_body.c_str());
+    }
+  }
+}
+
+void MujocoObjectPublisher::update(mjModel *mujoco_model, mjData *mujoco_data, double sim_time)
+{
+  // Publish at 10Hz
+  if (sim_time - last_publish_time_ < 1.0 / PUBLISH_RATE) return;
+
+  auto time_stamp = node_->now();
+
+  // Publish only the filtered/tracked bodies
+  for (size_t idx = 0; idx < body_names_.size(); idx++)
+  {
+    int i = body_indices_[idx];  // Get the original MuJoCo body index
+
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.stamp = time_stamp;
+    pose_msg.header.frame_id = body_names_[idx];  // Body name as frame_id
+
+    // Position (xpos is nbody x 3 array)
+    pose_msg.pose.position.x = mujoco_data->xpos[3 * i + 0];
+    pose_msg.pose.position.y = mujoco_data->xpos[3 * i + 1];
+    pose_msg.pose.position.z = mujoco_data->xpos[3 * i + 2];
+
+    // Orientation (xquat is nbody x 4 array, stored as w,x,y,z)
+    pose_msg.pose.orientation.w = mujoco_data->xquat[4 * i + 0];
+    pose_msg.pose.orientation.x = mujoco_data->xquat[4 * i + 1];
+    pose_msg.pose.orientation.y = mujoco_data->xquat[4 * i + 2];
+    pose_msg.pose.orientation.z = mujoco_data->xquat[4 * i + 3];
+
+    object_poses_pub_->publish(pose_msg);
+    std::this_thread::sleep_for(
+      std::chrono::microseconds(5000));  // 5ms delay to let publish do its work
+  }
+
+  last_publish_time_ = sim_time;
+}
+
+// Main MujocoRos2Control Implementation
 MujocoRos2Control::MujocoRos2Control(
   rclcpp::Node::SharedPtr &node, mjModel *mujoco_model, mjData *mujoco_data)
     : node_(node),
@@ -37,6 +173,8 @@ MujocoRos2Control::MujocoRos2Control(
       control_period_(rclcpp::Duration(1, 0)),
       last_update_sim_time_ros_(0, 0, RCL_ROS_TIME)
 {
+  // Initialize object publisher
+  object_publisher_ = std::make_unique<MujocoObjectPublisher>(node);
 }
 
 MujocoRos2Control::~MujocoRos2Control()
@@ -171,8 +309,9 @@ void MujocoRos2Control::init()
   }
 
   auto update_rate = controller_manager_->get_parameter("update_rate").as_int();
-  control_period_ = rclcpp::Duration(std::chrono::duration_cast<std::chrono::nanoseconds>(
-    std::chrono::duration<double>(1.0 / static_cast<double>(update_rate))));
+  control_period_ = rclcpp::Duration(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / static_cast<double>(update_rate))));
 
   // Force setting of use_sime_time parameter
   controller_manager_->set_parameter(
@@ -187,6 +326,9 @@ void MujocoRos2Control::init()
     }
   };
   cm_thread_ = std::thread(spin);
+
+  // Initialize object publisher
+  object_publisher_->init(mj_model_);
 }
 
 void MujocoRos2Control::update()
@@ -198,10 +340,7 @@ void MujocoRos2Control::update()
 
   rclcpp::Time sim_time_ros(sim_time_sec, sim_time_nanosec, RCL_ROS_TIME);
   rclcpp::Duration sim_period = sim_time_ros - last_update_sim_time_ros_;
-  // mju_error("DEBUG UPDATE: %f",sim_time_nanosec );
 
-
-  // RCLCPP_ERROR(logger_, "DEBUG TICK: %f",sim_time );
   publish_sim_time(sim_time_ros);
 
   mj_step1(mj_model_, mj_data_);
@@ -216,11 +355,13 @@ void MujocoRos2Control::update()
   controller_manager_->write(sim_time_ros, sim_period);
 
   mj_step2(mj_model_, mj_data_);
+
+  // Update object poses publisher
+  object_publisher_->update(mj_model_, mj_data_, sim_time);
 }
 
 void MujocoRos2Control::publish_sim_time(rclcpp::Time sim_time)
 {
-  // TODO(sangteak601)
   rosgraph_msgs::msg::Clock sim_time_msg;
   sim_time_msg.clock = sim_time;
   clock_publisher_->publish(sim_time_msg);
