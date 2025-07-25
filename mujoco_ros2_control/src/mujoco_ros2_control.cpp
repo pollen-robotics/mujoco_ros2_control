@@ -156,6 +156,8 @@ void MujocoObjectPublisher::update(mjModel *mujoco_model, mjData *mujoco_data, d
     pose_msg.pose.orientation.z = mujoco_data->xquat[4 * i + 3];
 
     object_poses_pub_->publish(pose_msg);
+    std::this_thread::sleep_for(
+      std::chrono::microseconds(5000));  // 5ms delay to let publish do its work
   }
 
   last_publish_time_ = sim_time;
