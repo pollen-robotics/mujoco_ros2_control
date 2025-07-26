@@ -22,6 +22,7 @@ find_package(urdf REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(control_toolbox REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 
@@ -35,6 +36,7 @@ set(THIS_PACKAGE_DEPENDS
   urdf
   glfw3
   control_toolbox
+  nav_msgs
 )
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
