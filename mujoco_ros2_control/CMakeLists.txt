@@ -26,6 +26,12 @@ find_package(nav_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 
+# Local IXWebSocket - build from source
+add_subdirectory(IXWebSocket)
+
+# System nlohmann_json
+find_package(nlohmann_json REQUIRED)
+
 set(THIS_PACKAGE_DEPENDS
   ament_cmake
   rclcpp
@@ -59,7 +65,11 @@ endif()
 
 add_library(mujoco_system_plugins SHARED src/mujoco_system.cpp)
 ament_target_dependencies(mujoco_system_plugins ${THIS_PACKAGE_DEPENDS})
-target_link_libraries(mujoco_system_plugins ${MUJOCO_LIB})
+target_link_libraries(mujoco_system_plugins 
+    ${MUJOCO_LIB}
+    ixwebsocket
+    nlohmann_json::nlohmann_json
+)
 target_include_directories(mujoco_system_plugins
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -82,7 +92,12 @@ add_executable(mujoco_ros2_control
   src/mujoco_cameras.cpp
 )
 ament_target_dependencies(mujoco_ros2_control ${THIS_PACKAGE_DEPENDS})
-target_link_libraries(mujoco_ros2_control ${MUJOCO_LIB} glfw   cv_bridge::cv_bridge
+target_link_libraries(mujoco_ros2_control 
+    ${MUJOCO_LIB} 
+    glfw 
+    cv_bridge::cv_bridge
+    ixwebsocket
+    nlohmann_json::nlohmann_json
 )
 target_include_directories(mujoco_ros2_control
   PUBLIC

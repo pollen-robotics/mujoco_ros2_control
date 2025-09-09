@@ -22,14 +22,21 @@
 #define MUJOCO_ROS2_CONTROL__MUJOCO_SYSTEM_HPP_
 
 #include <Eigen/Dense>
-#include <string>
-#include <vector>
+#include <condition_variable>
+#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "control_toolbox/pid.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "joint_limits/joint_limits.hpp"
 #include "mujoco_ros2_control/mujoco_system_interface.hpp"
+
+// WebSocket includes
+#include <ixwebsocket/IXWebSocket.h>
+#include <nlohmann/json.hpp>
 
 namespace mujoco_ros2_control
 {
@@ -43,6 +50,8 @@ class MujocoSystem : public MujocoSystemInterface
 {
 public:
   MujocoSystem();
+  ~MujocoSystem();
+
   std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
   std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
 
@@ -83,7 +92,7 @@ public:
     int mj_joint_type;
     int mj_pos_adr;
     int mj_vel_adr;
-      int mj_act_adr;
+    int mj_act_adr;
   };
 
   template <typename T>
@@ -110,6 +119,24 @@ public:
   };
 
 private:
+  // WebSocket members
+  ix::WebSocket ws_;
+  std::mutex state_mutex_;
+  std::condition_variable state_cv_;
+  bool state_received_ = false;
+  bool websocket_connected_ = false;
+
+  // Cached state from WebSocket
+  std::vector<double> cached_qpos_;
+  std::vector<double> cached_qvel_;
+  std::vector<double> cached_qfrc_applied_;
+  std::vector<double> cached_sensor_data_;
+  double cached_time_ = 0.0;
+
+  void setupWebSocket();
+  void handleWebSocketMessage(const ix::WebSocketMessagePtr &msg);
+  void sendCommand();
+
   void register_joints(
     const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info);
   void register_sensors(
@@ -128,7 +155,7 @@ private:
   std::vector<FTSensorData> ft_sensor_data_;
   std::vector<IMUSensorData> imu_sensor_data_;
 
-  // Ajout pour publier l’odométrie
+  // Ajout pour publier l'odométrie
   bool odom_initialized_ = false;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Node::SharedPtr node_;
@@ -142,9 +169,7 @@ private:
   mjModel *mj_model_;
   mjData *mj_data_;
 
-  ~MujocoSystem();
-
-  rclcpp::Logger logger_;  // TODO(sangteak601): delete?
+  rclcpp::Logger logger_;
 };
 }  // namespace mujoco_ros2_control
 

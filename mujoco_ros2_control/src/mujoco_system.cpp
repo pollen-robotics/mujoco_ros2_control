@@ -19,12 +19,143 @@
 // THE SOFTWARE.
 
 #include "mujoco_ros2_control/mujoco_system.hpp"
-#include "rclcpp/time.hpp"
 #include "builtin_interfaces/msg/time.hpp"
+#include "rclcpp/time.hpp"
+
+// WebSocket includes
+#include <ixwebsocket/IXNetSystem.h>
+#include <ixwebsocket/IXWebSocket.h>
+#include <condition_variable>
+#include <mutex>
+#include <nlohmann/json.hpp>
 
 namespace mujoco_ros2_control
 {
-MujocoSystem::MujocoSystem() : logger_(rclcpp::get_logger("")) {}
+MujocoSystem::MujocoSystem() : logger_(rclcpp::get_logger(""))
+{
+  // Initialize WebSocket networking
+  ix::initNetSystem();
+}
+
+void MujocoSystem::setupWebSocket()
+{
+  // Initialize WebSocket connection
+  std::string ws_url = "ws://127.0.0.1:8765";  // Make this configurable
+  ws_.setUrl(ws_url);
+
+  ws_.setOnMessageCallback([this](const ix::WebSocketMessagePtr &msg)
+                           { handleWebSocketMessage(msg); });
+
+  ws_.start();
+
+  // Wait for connection
+  auto start_time = std::chrono::steady_clock::now();
+  while (!websocket_connected_ &&
+         std::chrono::steady_clock::now() - start_time < std::chrono::seconds(5))
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  if (!websocket_connected_)
+  {
+    RCLCPP_ERROR(logger_, "Failed to connect to MuJoCo WebSocket server");
+  }
+}
+
+void MujocoSystem::handleWebSocketMessage(const ix::WebSocketMessagePtr &msg)
+{
+  if (msg->type == ix::WebSocketMessageType::Message && !msg->binary)
+  {
+    try
+    {
+      auto j = nlohmann::json::parse(msg->str);
+      std::string type = j.value("type", "");
+
+      if (type == "state")
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+
+        auto state = j["state"];
+        cached_time_ = state["time"];
+        cached_qpos_ = state["qpos"].get<std::vector<double>>();
+        cached_qvel_ = state["qvel"].get<std::vector<double>>();
+        cached_qfrc_applied_ = state["qfrc_applied"].get<std::vector<double>>();
+
+        if (state.contains("sensordata"))
+        {
+          cached_sensor_data_ = state["sensordata"].get<std::vector<double>>();
+        }
+
+        state_received_ = true;
+        state_cv_.notify_all();
+      }
+    }
+    catch (const std::exception &e)
+    {
+      RCLCPP_ERROR(logger_, "JSON parse error: %s", e.what());
+    }
+  }
+  else if (msg->type == ix::WebSocketMessageType::Open)
+  {
+    websocket_connected_ = true;
+    RCLCPP_INFO(logger_, "Connected to MuJoCo WebSocket server");
+  }
+  else if (msg->type == ix::WebSocketMessageType::Close)
+  {
+    websocket_connected_ = false;
+    RCLCPP_WARN(logger_, "Disconnected from MuJoCo WebSocket server");
+  }
+}
+
+void MujocoSystem::sendCommand()
+{
+  if (!websocket_connected_) return;
+
+  nlohmann::json cmd;
+  cmd["type"] = "set_control";
+
+  std::vector<double> control_values;
+  std::vector<double> torque_values;
+
+  // Collect control commands
+  for (const auto &joint_state : joint_states_)
+  {
+    if (joint_state.is_position_control_enabled)
+    {
+      // Send position command
+      control_values.push_back(joint_state.position_command);
+    }
+    else if (joint_state.is_velocity_control_enabled)
+    {
+      // Send velocity command
+      control_values.push_back(joint_state.velocity_command);
+    }
+    else
+    {
+      control_values.push_back(0.0);
+    }
+
+    if (joint_state.is_effort_control_enabled)
+    {
+      torque_values.push_back(joint_state.effort_command);
+    }
+    else
+    {
+      torque_values.push_back(0.0);
+    }
+  }
+
+  if (!control_values.empty())
+  {
+    cmd["control"] = control_values;
+  }
+  if (!torque_values.empty())
+  {
+    cmd["torque"] = torque_values;
+  }
+
+  ws_.sendText(cmd.dump());
+}
 
 std::vector<hardware_interface::StateInterface> MujocoSystem::export_state_interfaces()
 {
@@ -33,117 +164,91 @@ std::vector<hardware_interface::StateInterface> MujocoSystem::export_state_inter
 
 std::vector<hardware_interface::CommandInterface> MujocoSystem::export_command_interfaces()
 {
-  RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Total command interfaces: %ld", command_interfaces_.size());
-  for (const auto& iface : command_interfaces_) {
-    RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "  - Command interface: %s/%s", iface.get_name().c_str(), iface.get_interface_name().c_str());
+  RCLCPP_INFO(
+    rclcpp::get_logger("mujoco_ros2_control"), "Total command interfaces: %ld",
+    command_interfaces_.size());
+  for (const auto &iface : command_interfaces_)
+  {
+    RCLCPP_INFO(
+      rclcpp::get_logger("mujoco_ros2_control"), "  - Command interface: %s/%s",
+      iface.get_name().c_str(), iface.get_interface_name().c_str());
   }
   return std::move(command_interfaces_);
 }
 
 hardware_interface::return_type MujocoSystem::read(
-  const rclcpp::Time & time, const rclcpp::Duration & /* period */)
+  const rclcpp::Time &time, const rclcpp::Duration & /* period */)
 {
-  // Joint states
-  for (auto &joint_state : joint_states_)
+  // Wait for state update from WebSocket
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  if (!state_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] { return state_received_; }))
   {
-    joint_state.position = mj_data_->qpos[joint_state.mj_pos_adr];
-    joint_state.velocity = mj_data_->qvel[joint_state.mj_vel_adr];
-    joint_state.effort = mj_data_->qfrc_applied[joint_state.mj_vel_adr];
+    RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 1000, "No state received from WebSocket");
+    return hardware_interface::return_type::ERROR;
   }
 
-  // IMU Sensor data
-  // TODO(sangteak601): For now all sensors are assumed to be FTS
-  // for (auto& data : imu_sensor_data_)
-  // {
-  // }
+  // Update joint states from cached WebSocket data
+  for (size_t i = 0; i < joint_states_.size(); ++i)
+  {
+    if (joint_states_[i].mj_pos_adr < cached_qpos_.size())
+    {
+      joint_states_[i].position = cached_qpos_[joint_states_[i].mj_pos_adr];
+    }
+    if (joint_states_[i].mj_vel_adr < cached_qvel_.size())
+    {
+      joint_states_[i].velocity = cached_qvel_[joint_states_[i].mj_vel_adr];
+    }
+    if (joint_states_[i].mj_vel_adr < cached_qfrc_applied_.size())
+    {
+      joint_states_[i].effort = cached_qfrc_applied_[joint_states_[i].mj_vel_adr];
+    }
+  }
 
   // FT Sensor data
   for (auto &data : ft_sensor_data_)
   {
-    data.force.data.x() = -mj_data_->sensordata[data.force.mj_sensor_index];
-    data.force.data.y() = -mj_data_->sensordata[data.force.mj_sensor_index + 1];
-    data.force.data.z() = -mj_data_->sensordata[data.force.mj_sensor_index + 2];
+    if (data.force.mj_sensor_index < cached_sensor_data_.size())
+    {
+      data.force.data.x() = -cached_sensor_data_[data.force.mj_sensor_index];
+      data.force.data.y() = -cached_sensor_data_[data.force.mj_sensor_index + 1];
+      data.force.data.z() = -cached_sensor_data_[data.force.mj_sensor_index + 2];
+    }
 
-    data.torque.data.x() = -mj_data_->sensordata[data.torque.mj_sensor_index];
-    data.torque.data.y() = -mj_data_->sensordata[data.torque.mj_sensor_index + 1];
-    data.torque.data.z() = -mj_data_->sensordata[data.torque.mj_sensor_index + 2];
+    if (data.torque.mj_sensor_index < cached_sensor_data_.size())
+    {
+      data.torque.data.x() = -cached_sensor_data_[data.torque.mj_sensor_index];
+      data.torque.data.y() = -cached_sensor_data_[data.torque.mj_sensor_index + 1];
+      data.torque.data.z() = -cached_sensor_data_[data.torque.mj_sensor_index + 2];
+    }
   }
 
-  // ---- ODOMETRY AND FAKE VELOCITY CONTROL ----
+  // ---- ODOMETRY ----
+  // Note: For WebSocket mode, you'll need to modify this to get base_link data from WebSocket state
+  // or disable odometry if not needed
 
-  int base_body_id = mj_name2id(mj_model_, mjOBJ_BODY, "base_link");  // adapte le nom si nécessaire
-  if (base_body_id < 0) {
-    RCLCPP_WARN(rclcpp::get_logger("mujoco_system"), "Base body not found!");
-    return hardware_interface::return_type::OK;
-  }
-
-  if (!odom_initialized_) {
+  if (!odom_initialized_)
+  {
     node_ = rclcpp::Node::make_shared("mujoco_system_odom_node");
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
     executor_->add_node(node_);
-    spin_thread_ = std::thread([this]() {
-      executor_->spin();
-    });
+    spin_thread_ = std::thread([this]() { executor_->spin(); });
     odom_publisher_ = node_->create_publisher<nav_msgs::msg::Odometry>("/odom_mujoco", 10);
-    // Used to move the base link
-    // cmd_vel_sub_ = node_->create_subscription<geometry_msgs::msg::Twist>(
-    // "/cmd_vel_gazebo", 10,
-    // [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
-    //   this->last_cmd_vel_ = *msg;
-    //   // RCLCPP_ERROR(rclcpp::get_logger("mujoco_system"), "Received cmd_vel_fake: lin=%.2f %.2f %.2f ang=%.2f %.2f %.2f",
-    //   //   msg->linear.x, msg->linear.y, msg->linear.z,
-    //   //   msg->angular.x, msg->angular.y, msg->angular.z);
-    // });
     odom_initialized_ = true;
-    RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized.");
+    RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized (WebSocket mode).");
   }
 
-  // Position and orientation
-  const double* pos = &mj_data_->xpos[3 * base_body_id];
-  const double* quat = &mj_data_->xquat[4 * base_body_id];
-
-  // Linear and angular velocity (in body frame)
-  const double* cvel = &mj_data_->cvel[6 * base_body_id]; // [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
-
+  // For now, publish dummy odometry - you'll need to modify WebSocket protocol to include pose data
   auto odom = nav_msgs::msg::Odometry();
   odom.header.stamp = builtin_interfaces::msg::Time();
   odom.header.stamp.sec = static_cast<int32_t>(time.seconds());
   odom.header.stamp.nanosec = static_cast<uint32_t>((time.seconds() - odom.header.stamp.sec) * 1e9);
-  odom.header.frame_id = "odom_mujoco";        // monde
-  odom.child_frame_id = "base_link";    // robot
+  odom.header.frame_id = "odom_mujoco";
+  odom.child_frame_id = "base_link";
 
-  // Pose
-  odom.pose.pose.position.x = pos[0];
-  odom.pose.pose.position.y = pos[1];
-  odom.pose.pose.position.z = pos[2];
-
-  odom.pose.pose.orientation.w = quat[0];
-  odom.pose.pose.orientation.x = quat[1];
-  odom.pose.pose.orientation.y = quat[2];
-  odom.pose.pose.orientation.z = quat[3];
-
-  // Twist (in robot frame)
-  odom.twist.twist.linear.x = cvel[0];
-  odom.twist.twist.linear.y = cvel[1];
-  odom.twist.twist.linear.z = cvel[2];
-  odom.twist.twist.angular.x = cvel[3];
-  odom.twist.twist.angular.y = cvel[4];
-  odom.twist.twist.angular.z = cvel[5];
-
-  // Publish odom
+  // Publish odom (with zero values for now)
   odom_publisher_->publish(odom);
 
-  // Fake velocity control
-  // int qvel_start = mj_model_->jnt_dofadr[mj_name2id(mj_model_, mjOBJ_JOINT, "mobile_base")];
-  // mj_data_->qvel[qvel_start + 0] = last_cmd_vel_.linear.x;
-  // mj_data_->qvel[qvel_start + 1] = last_cmd_vel_.linear.y;
-  // mj_data_->qvel[qvel_start + 2] = last_cmd_vel_.linear.z;
-  // mj_data_->qvel[qvel_start + 3] = last_cmd_vel_.angular.x;
-  // mj_data_->qvel[qvel_start + 4] = last_cmd_vel_.angular.y;
-  // mj_data_->qvel[qvel_start + 5] = last_cmd_vel_.angular.z;
-
-  // ---- END OF ODOMETRY AND FAKE VELOCITY CONTROL ----
-
+  state_received_ = false;  // Reset for next read
   return hardware_interface::return_type::OK;
 }
 
@@ -151,64 +256,60 @@ hardware_interface::return_type MujocoSystem::write(
   const rclcpp::Time & /* time */, const rclcpp::Duration &period)
 {
   // update mimic joint
-
-
-    for (auto &joint_state : joint_states_)
+  for (auto &joint_state : joint_states_)
+  {
+    if (joint_state.is_mimic)
     {
-	if (joint_state.is_mimic)
-	{
-
-	    joint_state.position_command =
-		joint_state.mimic_multiplier *
-		joint_states_.at(joint_state.mimicked_joint_index).position_command;
-	    joint_state.velocity_command =
-		joint_state.mimic_multiplier *
-		joint_states_.at(joint_state.mimicked_joint_index).velocity_command;
-	    joint_state.effort_command =
-		joint_state.mimic_multiplier *
-		joint_states_.at(joint_state.mimicked_joint_index).effort_command;
-
-
-	}
+      joint_state.position_command =
+        joint_state.mimic_multiplier *
+        joint_states_.at(joint_state.mimicked_joint_index).position_command;
+      joint_state.velocity_command =
+        joint_state.mimic_multiplier *
+        joint_states_.at(joint_state.mimicked_joint_index).velocity_command;
+      joint_state.effort_command =
+        joint_state.mimic_multiplier *
+        joint_states_.at(joint_state.mimicked_joint_index).effort_command;
     }
+  }
 
-  // Joint states
+  // Apply joint limits and PID control (if needed)
   for (auto &joint_state : joint_states_)
   {
     if (joint_state.is_position_control_enabled)
     {
       if (joint_state.is_pid_enabled)
       {
-        double error = joint_state.position_command - mj_data_->qpos[joint_state.mj_pos_adr];
-        mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
+        // For WebSocket mode, we need position from cached state
+        double current_position = 0.0;
+        if (joint_state.mj_pos_adr < cached_qpos_.size())
+        {
+          current_position = cached_qpos_[joint_state.mj_pos_adr];
+        }
+        double error = joint_state.position_command - current_position;
+        joint_state.effort_command =
           joint_state.position_pid.computeCommand(error, period.nanoseconds());
       }
       else
       {
-
-          joint_state.position_command =
-            std::min(joint_state.joint_limits.max_position, joint_state.position_command);
-          joint_state.position_command =
-            std::max(joint_state.joint_limits.min_position, joint_state.position_command);
-
-	  mj_data_->ctrl[joint_state.mj_act_adr] = joint_state.position_command;
+        joint_state.position_command =
+          std::min(joint_state.joint_limits.max_position, joint_state.position_command);
+        joint_state.position_command =
+          std::max(joint_state.joint_limits.min_position, joint_state.position_command);
       }
     }
 
     if (joint_state.is_velocity_control_enabled)
     {
-      // RCLCPP_INFO(rclcpp::get_logger("mujoco_system"), "Joint command = %.3f", joint_state.velocity_command);
-
       if (joint_state.is_pid_enabled)
       {
-        double error = joint_state.velocity_command - mj_data_->qvel[joint_state.mj_vel_adr];
-        mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
+        double current_velocity = 0.0;
+        if (joint_state.mj_vel_adr < cached_qvel_.size())
+        {
+          current_velocity = cached_qvel_[joint_state.mj_vel_adr];
+        }
+        double error = joint_state.velocity_command - current_velocity;
+        joint_state.effort_command =
           joint_state.velocity_pid.computeCommand(error, period.nanoseconds());
-        ;
-      }
-      else
-      {
-        mj_data_->ctrl[joint_state.mj_act_adr] = joint_state.velocity_command;
       }
     }
 
@@ -224,10 +325,12 @@ hardware_interface::return_type MujocoSystem::write(
                                                            : std::numeric_limits<double>::max();
       max_eff = std::min(max_eff, joint_state.max_effort_command);
 
-      mj_data_->qfrc_applied[joint_state.mj_vel_adr] =
-        clamp(joint_state.effort_command, min_eff, max_eff);
+      joint_state.effort_command = clamp(joint_state.effort_command, min_eff, max_eff);
     }
   }
+
+  // Send commands via WebSocket instead of directly to MuJoCo
+  sendCommand();
 
   return hardware_interface::return_type::OK;
 }
@@ -241,11 +344,21 @@ bool MujocoSystem::init_sim(
 
   logger_ = rclcpp::get_logger("mujoco_system");
 
+  // Setup WebSocket connection
+  setupWebSocket();
+
   register_joints(urdf_model, hardware_info);
   register_sensors(urdf_model, hardware_info);
 
-  set_initial_pose();
-  return true;
+  // Send reset command via WebSocket instead of direct MuJoCo call
+  if (websocket_connected_)
+  {
+    nlohmann::json reset_cmd;
+    reset_cmd["type"] = "reset";
+    ws_.sendText(reset_cmd.dump());
+  }
+
+  return websocket_connected_;
 }
 
 void MujocoSystem::register_joints(
@@ -270,7 +383,7 @@ void MujocoSystem::register_joints(
     joint_state.mj_joint_type = mj_model_->jnt_type[mujoco_joint_id];
     joint_state.mj_pos_adr = mj_model_->jnt_qposadr[mujoco_joint_id];
     joint_state.mj_vel_adr = mj_model_->jnt_dofadr[mujoco_joint_id];
-    joint_state.mj_act_adr = mj_name2id(mj_model_,mjOBJ_ACTUATOR,joint.name.c_str());
+    joint_state.mj_act_adr = mj_name2id(mj_model_, mjOBJ_ACTUATOR, joint.name.c_str());
     joint_states_.at(joint_index) = joint_state;
     JointState &last_joint_state = joint_states_.at(joint_index);
 
@@ -320,8 +433,9 @@ void MujocoSystem::register_joints(
     // state interfaces
     for (const auto &state_if : joint.state_interfaces)
     {
-      RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Joint %s has state interface: %s",
-            joint.name.c_str(), state_if.name.c_str());
+      RCLCPP_INFO(
+        rclcpp::get_logger("mujoco_ros2_control"), "Joint %s has state interface: %s",
+        joint.name.c_str(), state_if.name.c_str());
 
       if (state_if.name == hardware_interface::HW_IF_POSITION)
       {
@@ -373,8 +487,9 @@ void MujocoSystem::register_joints(
     // overwrite joint limit with min/max value
     for (const auto &command_if : joint.command_interfaces)
     {
-      RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Joint %s has command interface: %s",
-            joint.name.c_str(), command_if.name.c_str());
+      RCLCPP_INFO(
+        rclcpp::get_logger("mujoco_ros2_control"), "Joint %s has command interface: %s",
+        joint.name.c_str(), command_if.name.c_str());
 
       if (command_if.name.find(hardware_interface::HW_IF_POSITION) != std::string::npos)
       {
@@ -493,9 +608,20 @@ void MujocoSystem::register_sensors(
 
 void MujocoSystem::set_initial_pose()
 {
-  for (auto &joint_state : joint_states_)
+  // In WebSocket mode, we send initial pose via WebSocket instead of direct assignment
+  if (websocket_connected_)
   {
-    mj_data_->qpos[joint_state.mj_pos_adr] = joint_state.position;
+    nlohmann::json init_pose_cmd;
+    init_pose_cmd["type"] = "set_initial_pose";
+    std::vector<double> initial_positions;
+
+    for (const auto &joint_state : joint_states_)
+    {
+      initial_positions.push_back(joint_state.position);
+    }
+
+    init_pose_cmd["qpos"] = initial_positions;
+    ws_.sendText(init_pose_cmd.dump());
   }
 }
 
@@ -504,7 +630,6 @@ void MujocoSystem::get_joint_limits(
 {
   if (urdf_joint->limits)
   {
-
     joint_limits.min_position = urdf_joint->limits->lower;
     joint_limits.max_position = urdf_joint->limits->upper;
     joint_limits.max_velocity = urdf_joint->limits->velocity;
@@ -573,15 +698,27 @@ control_toolbox::Pid MujocoSystem::get_pid_gains(
   return control_toolbox::Pid(kp, ki, kd, i_max, i_min, enable_anti_windup);
 }
 
-MujocoSystem::~MujocoSystem() {
-  if (executor_) {
+MujocoSystem::~MujocoSystem()
+{
+  // Close WebSocket connection
+  if (websocket_connected_)
+  {
+    ws_.stop();
+  }
+
+  if (executor_)
+  {
     executor_->cancel();
   }
-  if (spin_thread_.joinable()) {
+  if (spin_thread_.joinable())
+  {
     spin_thread_.join();
   }
-  RCLCPP_INFO(rclcpp::get_logger("mujoco_system"), "MujocoSystem destructor called, ROS executor stopped.");
+  RCLCPP_INFO(
+    rclcpp::get_logger("mujoco_system"),
+    "MujocoSystem destructor called, WebSocket and ROS executor stopped.");
 }
+
 }  // namespace mujoco_ros2_control
 
 #include "pluginlib/class_list_macros.hpp"

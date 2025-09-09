@@ -27,141 +27,8 @@
 namespace mujoco_ros2_control
 {
 
-// Object Publisher Implementation
-MujocoObjectPublisher::MujocoObjectPublisher(rclcpp::Node::SharedPtr &node)
-    : node_(node), last_publish_time_(0.0)
-{
-  object_poses_pub_ =
-    node_->create_publisher<geometry_msgs::msg::PoseStamped>("/mujoco/item_position", 10);
-}
-
-void MujocoObjectPublisher::init(mjModel *mujoco_model)
-{
-  body_names_.clear();
-  body_indices_.clear();
-
-  // Look for custom text field with tracked bodies list
-  std::set<std::string> tracked_body_names;
-  bool found_tracked_list = false;
-
-  for (int i = 0; i < mujoco_model->ntext; i++)
-  {
-    const char *name = mujoco_model->names + mujoco_model->name_textadr[i];
-    if (std::string(name) == "tracked_bodies")
-    {
-      const char *data = mujoco_model->text_data + mujoco_model->text_adr[i];
-      std::string body_list(data);
-
-      // Parse comma-separated list
-      std::stringstream ss(body_list);
-      std::string body_name;
-      while (std::getline(ss, body_name, ','))
-      {
-        // Trim whitespace
-        body_name.erase(0, body_name.find_first_not_of(" \t"));
-        body_name.erase(body_name.find_last_not_of(" \t") + 1);
-        if (!body_name.empty())
-        {
-          tracked_body_names.insert(body_name);
-        }
-      }
-      found_tracked_list = true;
-      RCLCPP_INFO(
-        node_->get_logger(), "Found tracked_bodies list with %zu bodies",
-        tracked_body_names.size());
-      break;
-    }
-  }
-
-  if (!found_tracked_list)
-  {
-    RCLCPP_INFO(
-      node_->get_logger(), "No 'tracked_bodies' custom text found - no bodies will be tracked");
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "Add <custom><text name=\"tracked_bodies\" data=\"body1,body2,body3\"/></custom> to your XML "
-      "to track specific bodies");
-    return;
-  }
-
-  // Find and add only the bodies specified in the tracked list
-  for (int i = 1; i < mujoco_model->nbody; i++)  // Skip world body at index 0
-  {
-    const char *name = mujoco_model->names + mujoco_model->name_bodyadr[i];
-    std::string body_name = std::string(name);
-
-    if (tracked_body_names.find(body_name) != tracked_body_names.end())
-    {
-      body_names_.push_back(body_name);
-      body_indices_.push_back(i);
-    }
-  }
-
-  RCLCPP_INFO(
-    node_->get_logger(), "Object publisher initialized for %zu tracked bodies", body_names_.size());
-
-  // Log all tracked body names for debugging
-  for (size_t i = 0; i < body_names_.size(); i++)
-  {
-    RCLCPP_INFO(
-      node_->get_logger(), "Tracking body %d: '%s'", body_indices_[i], body_names_[i].c_str());
-  }
-
-  // Warn about bodies in the list that weren't found in the model
-  for (const auto &requested_body : tracked_body_names)
-  {
-    bool found = false;
-    for (const auto &tracked_body : body_names_)
-    {
-      if (tracked_body == requested_body)
-      {
-        found = true;
-        break;
-      }
-    }
-    if (!found)
-    {
-      RCLCPP_WARN(
-        node_->get_logger(), "Requested body '%s' not found in MuJoCo model",
-        requested_body.c_str());
-    }
-  }
-}
-
-void MujocoObjectPublisher::update(mjModel *mujoco_model, mjData *mujoco_data, double sim_time)
-{
-  // Publish at 10Hz
-  if (sim_time - last_publish_time_ < 1.0 / PUBLISH_RATE) return;
-
-  auto time_stamp = node_->now();
-
-  // Publish only the filtered/tracked bodies
-  for (size_t idx = 0; idx < body_names_.size(); idx++)
-  {
-    int i = body_indices_[idx];  // Get the original MuJoCo body index
-
-    geometry_msgs::msg::PoseStamped pose_msg;
-    pose_msg.header.stamp = time_stamp;
-    pose_msg.header.frame_id = body_names_[idx];  // Body name as frame_id
-
-    // Position (xpos is nbody x 3 array)
-    pose_msg.pose.position.x = mujoco_data->xpos[3 * i + 0];
-    pose_msg.pose.position.y = mujoco_data->xpos[3 * i + 1];
-    pose_msg.pose.position.z = mujoco_data->xpos[3 * i + 2];
-
-    // Orientation (xquat is nbody x 4 array, stored as w,x,y,z)
-    pose_msg.pose.orientation.w = mujoco_data->xquat[4 * i + 0];
-    pose_msg.pose.orientation.x = mujoco_data->xquat[4 * i + 1];
-    pose_msg.pose.orientation.y = mujoco_data->xquat[4 * i + 2];
-    pose_msg.pose.orientation.z = mujoco_data->xquat[4 * i + 3];
-
-    object_poses_pub_->publish(pose_msg);
-    std::this_thread::sleep_for(
-      std::chrono::microseconds(5000));  // 5ms delay to let publish do its work
-  }
-
-  last_publish_time_ = sim_time;
-}
+// Object Publisher Implementation - Removed since we're not running the MuJoCo engine
+// The external MuJoCo server can publish object poses directly if needed
 
 // Main MujocoRos2Control Implementation
 MujocoRos2Control::MujocoRos2Control(
@@ -173,8 +40,9 @@ MujocoRos2Control::MujocoRos2Control(
       control_period_(rclcpp::Duration(1, 0)),
       last_update_sim_time_ros_(0, 0, RCL_ROS_TIME)
 {
-  // Initialize object publisher
-  object_publisher_ = std::make_unique<MujocoObjectPublisher>(node);
+  // Object publisher removed since we're not running the MuJoCo engine
+  // The external MuJoCo server handles object tracking and publishing
+  RCLCPP_INFO(logger_, "MujocoRos2Control initialized for WebSocket mode");
 }
 
 MujocoRos2Control::~MujocoRos2Control()
@@ -283,7 +151,7 @@ void MujocoRos2Control::init()
     urdf_model.initString(urdf_string);
     if (!mujoco_system->init_sim(mj_model_, mj_data_, urdf_model, hardware))
     {
-      RCLCPP_FATAL(logger_, "Could not initialize robot simulation interface");
+      RCLCPP_FATAL(logger_, "Could not initialize robot simulation interface (WebSocket mode)");
       return;
     }
 
@@ -296,7 +164,7 @@ void MujocoRos2Control::init()
   }
 
   // Create the controller manager
-  RCLCPP_INFO(logger_, "Loading controller_manager");
+  RCLCPP_INFO(logger_, "Loading controller_manager (WebSocket mode)");
   cm_executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
   controller_manager_ = std::make_shared<controller_manager::ControllerManager>(
     std::move(resource_manager), cm_executor_, "controller_manager", node_->get_namespace());
@@ -327,23 +195,26 @@ void MujocoRos2Control::init()
   };
   cm_thread_ = std::thread(spin);
 
-  // Initialize object publisher
-  object_publisher_->init(mj_model_);
+  RCLCPP_INFO(logger_, "MujocoRos2Control initialization complete (WebSocket mode)");
 }
 
 void MujocoRos2Control::update()
 {
-  // Get the simulation time and period
-  auto sim_time = mj_data_->time;
-  int sim_time_sec = static_cast<int>(sim_time);
-  int sim_time_nanosec = static_cast<int>((sim_time - sim_time_sec) * 1000000000);
+  // Get simulation time from system clock since we don't have direct MuJoCo access
+  // In a real implementation, you might want to get this from the WebSocket state messages
+  auto now = std::chrono::steady_clock::now();
+  auto duration = now.time_since_epoch();
+  auto sim_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+
+  int sim_time_sec = static_cast<int>(sim_time_ns / 1000000000);
+  int sim_time_nanosec = static_cast<int>(sim_time_ns % 1000000000);
 
   rclcpp::Time sim_time_ros(sim_time_sec, sim_time_nanosec, RCL_ROS_TIME);
   rclcpp::Duration sim_period = sim_time_ros - last_update_sim_time_ros_;
 
   publish_sim_time(sim_time_ros);
 
-  mj_step1(mj_model_, mj_data_);
+  // No mj_step1 call - handled by external MuJoCo server via WebSocket
 
   if (sim_period >= control_period_)
   {
@@ -351,13 +222,13 @@ void MujocoRos2Control::update()
     controller_manager_->update(sim_time_ros, sim_period);
     last_update_sim_time_ros_ = sim_time_ros;
   }
-  // use same time as for read and update call - this is how it is done in ros2_control_node
+
+  // Write commands - will be sent via WebSocket by the MujocoSystem
   controller_manager_->write(sim_time_ros, sim_period);
 
-  mj_step2(mj_model_, mj_data_);
+  // No mj_step2 call - handled by external MuJoCo server via WebSocket
 
-  // Update object poses publisher
-  object_publisher_->update(mj_model_, mj_data_, sim_time);
+  // Object publisher removed - external MuJoCo server handles object tracking
 }
 
 void MujocoRos2Control::publish_sim_time(rclcpp::Time sim_time)
