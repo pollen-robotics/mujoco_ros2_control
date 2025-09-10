@@ -32,7 +32,7 @@
 namespace mujoco_ros2_control
 {
 
-// Static singleton WebSocket manager
+// Static singleton WebSocket manager with centralized odometry
 class WebSocketManager
 {
 public:
@@ -125,12 +125,61 @@ public:
       ws_.stop();
       connected_ = false;
     }
+
+    // Cleanup odometry publisher
+    if (odom_initialized_)
+    {
+      if (executor_)
+      {
+        executor_->cancel();
+      }
+      if (spin_thread_.joinable())
+      {
+        spin_thread_.join();
+      }
+      odom_initialized_ = false;
+    }
+  }
+
+  // Centralized odometry publishing
+  void publishOdometry(const rclcpp::Time &time)
+  {
+    if (!odom_initialized_)
+    {
+      initializeOdometry();
+    }
+
+    if (odom_publisher_)
+    {
+      auto odom = nav_msgs::msg::Odometry();
+      odom.header.stamp = builtin_interfaces::msg::Time();
+      odom.header.stamp.sec = static_cast<int32_t>(time.seconds());
+      odom.header.stamp.nanosec =
+        static_cast<uint32_t>((time.seconds() - odom.header.stamp.sec) * 1e9);
+      odom.header.frame_id = "odom_mujoco";
+      odom.child_frame_id = "base_link";
+      odom_publisher_->publish(odom);
+    }
   }
 
 private:
   WebSocketManager() { ix::initNetSystem(); }
 
   ~WebSocketManager() { shutdown(); }
+
+  void initializeOdometry()
+  {
+    if (odom_initialized_) return;
+
+    node_ = rclcpp::Node::make_shared("mujoco_websocket_odom_node");
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(node_);
+    spin_thread_ = std::thread([this]() { executor_->spin(); });
+    odom_publisher_ = node_->create_publisher<nav_msgs::msg::Odometry>("/odom_mujoco", 10);
+    odom_initialized_ = true;
+
+    std::cout << "Centralized odometry publisher initialized (WebSocket mode)." << std::endl;
+  }
 
   void handleMessage(const ix::WebSocketMessagePtr &msg)
   {
@@ -189,6 +238,13 @@ private:
   std::vector<double> cached_qfrc_applied_;
   std::vector<double> cached_sensor_data_;
   double cached_time_ = 0.0;
+
+  // Centralized odometry members
+  bool odom_initialized_ = false;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
+  rclcpp::Node::SharedPtr node_;
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
+  std::thread spin_thread_;
 };
 
 MujocoSystem::MujocoSystem() : logger_(rclcpp::get_logger("")) {}
@@ -267,26 +323,8 @@ hardware_interface::return_type MujocoSystem::read(
     }
   }
 
-  // Odometry (simplified for WebSocket mode)
-  if (!odom_initialized_)
-  {
-    node_ = rclcpp::Node::make_shared("mujoco_system_odom_node");
-    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
-    executor_->add_node(node_);
-    spin_thread_ = std::thread([this]() { executor_->spin(); });
-    odom_publisher_ = node_->create_publisher<nav_msgs::msg::Odometry>("/odom_mujoco", 10);
-    odom_initialized_ = true;
-    RCLCPP_INFO(node_->get_logger(), "Odometry publisher initialized (WebSocket mode).");
-  }
-
-  // Publish basic odometry
-  auto odom = nav_msgs::msg::Odometry();
-  odom.header.stamp = builtin_interfaces::msg::Time();
-  odom.header.stamp.sec = static_cast<int32_t>(time.seconds());
-  odom.header.stamp.nanosec = static_cast<uint32_t>((time.seconds() - odom.header.stamp.sec) * 1e9);
-  odom.header.frame_id = "odom_mujoco";
-  odom.child_frame_id = "base_link";
-  odom_publisher_->publish(odom);
+  // Use centralized odometry publishing
+  wsManager.publishOdometry(time);
 
   return hardware_interface::return_type::OK;
 }
@@ -435,9 +473,7 @@ bool MujocoSystem::init_sim(
   return true;
 }
 
-// Include all the rest of your original implementation functions here:
-// register_joints, register_sensors, set_initial_pose, get_joint_limits, get_pid_gains
-
+// Rest of the implementation (register_joints, register_sensors, etc.) remains the same
 void MujocoSystem::register_joints(
   const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info)
 {
@@ -769,16 +805,9 @@ control_toolbox::Pid MujocoSystem::get_pid_gains(
 
 MujocoSystem::~MujocoSystem()
 {
-  if (executor_)
-  {
-    executor_->cancel();
-  }
-  if (spin_thread_.joinable())
-  {
-    spin_thread_.join();
-  }
-  RCLCPP_INFO(
-    rclcpp::get_logger("mujoco_system"), "MujocoSystem destructor called, ROS executor stopped.");
+  // Individual MujocoSystem instances no longer manage odometry
+  // The WebSocket singleton handles centralized odometry cleanup
+  RCLCPP_INFO(rclcpp::get_logger("mujoco_system"), "MujocoSystem destructor called.");
 }
 
 }  // namespace mujoco_ros2_control
