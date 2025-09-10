@@ -53,6 +53,7 @@ public:
 
     // Use the correct IXWebSocket callback API
     ws_.setOnMessageCallback(
+
       [this](const ix::WebSocketMessagePtr &msg)
       {
         if (msg->type == ix::WebSocketMessageType::Message)
@@ -183,6 +184,8 @@ private:
 
   void handleMessage(const ix::WebSocketMessagePtr &msg)
   {
+    // print that a message was received
+    // std::cout << "Handle" << std::endl;
     if (!msg->binary)
     {
       try
