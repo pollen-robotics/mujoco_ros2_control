@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <chrono>
 #include <vector>
+// TODO merge with inner mujoco ros2 control
 
 // MuJoCo data structures - only used for joint/sensor mapping, not simulation
 mjModel *mujoco_model = nullptr;
@@ -77,6 +78,7 @@ int main(int argc, const char **argv)
   // NOTE: No rendering or camera initialization since we're not running the MuJoCo engine
   // The external MuJoCo server handles visualization and cameras
   RCLCPP_INFO_STREAM(node->get_logger(), "Rendering and cameras handled by external MuJoCo server");
+  RCLCPP_INFO_STREAM(node->get_logger(), "Let's toto this");
 
   // Timing variables for control loop performance monitoring
   std::vector<double> control_times;
@@ -84,15 +86,22 @@ int main(int argc, const char **argv)
 
   // Frequency control variables using real time
   auto last_control_update = std::chrono::steady_clock::now();
-  constexpr double CONTROL_FREQ = 1000.0;
+  // constexpr double CONTROL_FREQ = 1000.0;
+  auto control_period = mujoco_control.get_control_period();
+  // log control period
+  RCLCPP_INFO_STREAM(
+    node->get_logger(), "Control period: " << control_period.seconds() << " seconds");
 
+  double control_period_seconds = control_period.seconds();
   // Main control loop - only handle ROS2 control updates
   while (rclcpp::ok())
   {
     auto now = std::chrono::steady_clock::now();
 
-    if (std::chrono::duration<double>(now - last_control_update).count() >= 1.0 / CONTROL_FREQ)
+    if (std::chrono::duration<double>(now - last_control_update).count() >= control_period_seconds)
     {
+      // RCLCPP_INFO_STREAM(node->get_logger(), "Going to do a control update");
+
       auto control_start = std::chrono::steady_clock::now();
       mujoco_control.update();
       auto control_end = std::chrono::steady_clock::now();
@@ -102,44 +111,46 @@ int main(int argc, const char **argv)
       control_times.push_back(control_time_ms);
 
       last_control_update = now;
-    }
+      // RCLCPP_INFO_STREAM(node->get_logger(), "Control update done");
 
-    // Log control statistics every 60 seconds
-    auto current_time = now;
-    auto time_since_last_stats =
-      std::chrono::duration<double>(current_time - last_stats_time).count();
+      // Log control statistics every 60 seconds
+      auto current_time = now;
+      auto time_since_last_stats =
+        std::chrono::duration<double>(current_time - last_stats_time).count();
 
-    if (time_since_last_stats >= 60.0)
-    {
-      RCLCPP_INFO(
-        node->get_logger(), "=== Control Performance Stats (60s window, WebSocket mode) ===");
-
-      // Control stats
-      if (!control_times.empty())
+      if (time_since_last_stats >= 60.0)
       {
-        double min_time = *std::min_element(control_times.begin(), control_times.end());
-        double max_time = *std::max_element(control_times.begin(), control_times.end());
-        double sum = std::accumulate(control_times.begin(), control_times.end(), 0.0);
-        double mean_time = sum / control_times.size();
-        double hz = control_times.size() / time_since_last_stats;
+        RCLCPP_INFO(
+          node->get_logger(), "=== Control Performance Stats (60s window, WebSocket mode) ===");
+
+        // Control stats
+        if (!control_times.empty())
+        {
+          double min_time = *std::min_element(control_times.begin(), control_times.end());
+          double max_time = *std::max_element(control_times.begin(), control_times.end());
+          double sum = std::accumulate(control_times.begin(), control_times.end(), 0.0);
+          double mean_time = sum / control_times.size();
+          double hz = control_times.size() / time_since_last_stats;
+
+          RCLCPP_INFO(
+            node->get_logger(),
+            "Control    | Updates:%4zu | Hz: %6.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
+            control_times.size(), hz, mean_time, min_time, max_time);
+        }
 
         RCLCPP_INFO(
           node->get_logger(),
-          "Control    | Updates:%4zu | Hz: %6.1f | Mean: %5.2fms | Min: %5.2fms | Max: %5.2fms",
-          control_times.size(), hz, mean_time, min_time, max_time);
+          "WebSocket mode: Rendering and cameras handled by external MuJoCo server");
+        RCLCPP_INFO(
+          node->get_logger(), "================================================================");
+
+        // Reset for next window
+        control_times.clear();
+        last_stats_time = current_time;
       }
 
-      RCLCPP_INFO(
-        node->get_logger(),
-        "WebSocket mode: Rendering and cameras handled by external MuJoCo server");
-      RCLCPP_INFO(
-        node->get_logger(), "================================================================");
-
-      // Reset for next window
-      control_times.clear();
-      last_stats_time = current_time;
+      RCLCPP_INFO_STREAM(node->get_logger(), "Yet another loop iteration");
     }
-
     // Small sleep to prevent CPU spinning
     std::this_thread::sleep_for(std::chrono::microseconds(100));
   }

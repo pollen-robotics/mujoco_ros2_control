@@ -60,6 +60,7 @@ public:
   ~MujocoRos2Control();
   void init();
   void update();
+  rclcpp::Duration get_control_period() const;
 
 private:
   void publish_sim_time(rclcpp::Time sim_time);

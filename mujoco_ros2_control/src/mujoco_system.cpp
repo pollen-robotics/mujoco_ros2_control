@@ -102,12 +102,15 @@ public:
     std::vector<double> &qpos, std::vector<double> &qvel, std::vector<double> &qfrc_applied,
     std::vector<double> &sensordata, double &time)
   {
+    // std::cout << "Getting latest state" << std::endl;
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (!state_received_)
     {
+      // std::cout << "returning false" << std::endl;
+
       return false;
     }
-
+    // std::cout << "returning true" << std::endl;
     qpos = cached_qpos_;
     qvel = cached_qvel_;
     qfrc_applied = cached_qfrc_applied_;
@@ -185,7 +188,7 @@ private:
   void handleMessage(const ix::WebSocketMessagePtr &msg)
   {
     // print that a message was received
-    // std::cout << "Handle" << std::endl;
+    std::cout << "Handle" << std::endl;
     if (!msg->binary)
     {
       try
@@ -275,25 +278,38 @@ hardware_interface::return_type MujocoSystem::read(
   const rclcpp::Time &time, const rclcpp::Duration & /* period */)
 {
   auto &wsManager = WebSocketManager::getInstance();
-
+  // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Inside read function");
   if (!wsManager.isConnected())
   {
     RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 1000, "WebSocket not connected");
+    // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "ouch not connected");
     return hardware_interface::return_type::ERROR;
   }
+  // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "So we do have a connection");
+  // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "So we do have a connection2");
 
   std::vector<double> qpos, qvel, qfrc_applied, sensordata;
+  // RCLCPP_INFO(logger_, "declaring random stuff");
   double sim_time;
-
+  // RCLCPP_INFO(logger_, "declaring random stuff2");
   if (!wsManager.getLatestState(qpos, qvel, qfrc_applied, sensordata, sim_time))
   {
-    RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 1000, "No fresh state from WebSocket");
+    // std::cout << "false has been returned" << std::endl;
+    // catch exception on this WARN
+    RCLCPP_INFO(logger_, "No fresh state from WebSocket");
+    // std::cout << "No fresh state from WebSocket" << std::endl;
     return hardware_interface::return_type::OK;  // Don't error, just use old data
   }
 
+  RCLCPP_INFO(logger_, "Received state from WebSocket at sim time: %f", sim_time);
   // Update joint states from WebSocket data
   for (size_t i = 0; i < joint_states_.size(); ++i)
   {
+    // // print all qpos
+    // for (const auto &pos : qpos)
+    // {
+    //   RCLCPP_INFO(logger_, "qpos: %f", pos);
+    // }
     if (joint_states_[i].mj_pos_adr < qpos.size())
     {
       joint_states_[i].position = qpos[joint_states_[i].mj_pos_adr];
@@ -307,7 +323,7 @@ hardware_interface::return_type MujocoSystem::read(
       joint_states_[i].effort = qfrc_applied[joint_states_[i].mj_vel_adr];
     }
   }
-
+  // RCLCPP_INFO(logger_, "Updated joint states from WebSocket data");
   // Update FT sensor data
   for (auto &data : ft_sensor_data_)
   {

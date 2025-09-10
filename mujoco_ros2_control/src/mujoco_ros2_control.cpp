@@ -198,10 +198,14 @@ void MujocoRos2Control::init()
   RCLCPP_INFO(logger_, "MujocoRos2Control initialization complete (WebSocket mode)");
 }
 
+rclcpp::Duration MujocoRos2Control::get_control_period() const { return control_period_; }
+
 void MujocoRos2Control::update()
 {
   // Get simulation time from system clock since we don't have direct MuJoCo access
   // In a real implementation, you might want to get this from the WebSocket state messages
+  // RCLCPP_INFO(logger_, "Inside update function");
+
   auto now = std::chrono::steady_clock::now();
   auto duration = now.time_since_epoch();
   auto sim_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
@@ -218,17 +222,35 @@ void MujocoRos2Control::update()
 
   if (sim_period >= control_period_)
   {
-    controller_manager_->read(sim_time_ros, sim_period);
+    RCLCPP_INFO(logger_, "Going to read");
+
+    // catch exception here
+    try
+    {
+      controller_manager_->read(sim_time_ros, sim_period);
+    }
+    catch (const std::exception &e)
+    {
+      RCLCPP_ERROR(logger_, "Error occurred while reading: %s", e.what());
+    }
+
+    RCLCPP_INFO(logger_, "Going to update");
+
     controller_manager_->update(sim_time_ros, sim_period);
+
+    RCLCPP_INFO(logger_, "Going to write");
+    controller_manager_->write(sim_time_ros, sim_period);
+
     last_update_sim_time_ros_ = sim_time_ros;
   }
+  // RCLCPP_INFO(logger_, "Going to write");
 
   // Write commands - will be sent via WebSocket by the MujocoSystem
-  controller_manager_->write(sim_time_ros, sim_period);
 
   // No mj_step2 call - handled by external MuJoCo server via WebSocket
 
   // Object publisher removed - external MuJoCo server handles object tracking
+  // RCLCPP_INFO(logger_, "Update function complete");
 }
 
 void MujocoRos2Control::publish_sim_time(rclcpp::Time sim_time)
