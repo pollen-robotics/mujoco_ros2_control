@@ -22,8 +22,6 @@
 #define MUJOCO_ROS2_CONTROL__MUJOCO_SYSTEM_HPP_
 
 #include <Eigen/Dense>
-#include <condition_variable>
-#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
 #include <string>
 #include <thread>
@@ -33,10 +31,6 @@
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "joint_limits/joint_limits.hpp"
 #include "mujoco_ros2_control/mujoco_system_interface.hpp"
-
-// WebSocket includes
-#include <ixwebsocket/IXWebSocket.h>
-#include <nlohmann/json.hpp>
 
 namespace mujoco_ros2_control
 {
@@ -119,24 +113,6 @@ public:
   };
 
 private:
-  // WebSocket members
-  ix::WebSocket ws_;
-  std::mutex state_mutex_;
-  std::condition_variable state_cv_;
-  bool state_received_ = false;
-  bool websocket_connected_ = false;
-
-  // Cached state from WebSocket
-  std::vector<double> cached_qpos_;
-  std::vector<double> cached_qvel_;
-  std::vector<double> cached_qfrc_applied_;
-  std::vector<double> cached_sensor_data_;
-  double cached_time_ = 0.0;
-
-  void setupWebSocket();
-  void handleWebSocketMessage(const ix::WebSocketMessagePtr &msg);
-  void sendCommand();
-
   void register_joints(
     const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info);
   void register_sensors(
