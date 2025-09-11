@@ -149,7 +149,7 @@ int main(int argc, const char **argv)
         last_stats_time = current_time;
       }
 
-      RCLCPP_INFO_STREAM(node->get_logger(), "Yet another loop iteration");
+      // RCLCPP_INFO_STREAM(node->get_logger(), "Yet another loop iteration");
     }
     // Small sleep to prevent CPU spinning
     std::this_thread::sleep_for(std::chrono::microseconds(100));

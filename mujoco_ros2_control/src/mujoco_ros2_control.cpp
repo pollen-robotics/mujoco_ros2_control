@@ -222,7 +222,7 @@ void MujocoRos2Control::update()
 
   if (sim_period >= control_period_)
   {
-    RCLCPP_INFO(logger_, "Going to read");
+    // RCLCPP_INFO(logger_, "Going to read");
 
     // catch exception here
     try
@@ -234,11 +234,11 @@ void MujocoRos2Control::update()
       RCLCPP_ERROR(logger_, "Error occurred while reading: %s", e.what());
     }
 
-    RCLCPP_INFO(logger_, "Going to update");
+    // RCLCPP_INFO(logger_, "Going to update");
 
     controller_manager_->update(sim_time_ros, sim_period);
 
-    RCLCPP_INFO(logger_, "Going to write");
+    // RCLCPP_INFO(logger_, "Going to write");
     controller_manager_->write(sim_time_ros, sim_period);
 
     last_update_sim_time_ros_ = sim_time_ros;

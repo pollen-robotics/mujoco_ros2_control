@@ -188,7 +188,7 @@ private:
   void handleMessage(const ix::WebSocketMessagePtr &msg)
   {
     // print that a message was received
-    std::cout << "Handle" << std::endl;
+    // std::cout << "Handle" << std::endl;
     if (!msg->binary)
     {
       try
@@ -301,45 +301,40 @@ hardware_interface::return_type MujocoSystem::read(
     return hardware_interface::return_type::OK;  // Don't error, just use old data
   }
 
-  RCLCPP_INFO(logger_, "Received state from WebSocket at sim time: %f", sim_time);
+  // RCLCPP_INFO(logger_, "Received state from WebSocket at sim time: %f", sim_time);
   // Update joint states from WebSocket data
   for (size_t i = 0; i < joint_states_.size(); ++i)
+
   {
+    // print the number of joint for this hardware interface
+    // RCLCPP_INFO(logger_, "Joint %ld/%ld", i + 1, joint_states_.size());
     // // print all qpos
     // for (const auto &pos : qpos)
     // {
     //   RCLCPP_INFO(logger_, "qpos: %f", pos);
     // }
-    if (joint_states_[i].mj_pos_adr < qpos.size())
-    {
-      joint_states_[i].position = qpos[joint_states_[i].mj_pos_adr];
-    }
-    if (joint_states_[i].mj_vel_adr < qvel.size())
-    {
-      joint_states_[i].velocity = qvel[joint_states_[i].mj_vel_adr];
-    }
-    if (joint_states_[i].mj_vel_adr < qfrc_applied.size())
-    {
-      joint_states_[i].effort = qfrc_applied[joint_states_[i].mj_vel_adr];
-    }
+
+    joint_states_[i].position = qpos[joint_states_[i].mj_pos_adr];
+
+    joint_states_[i].velocity = qvel[joint_states_[i].mj_vel_adr];
+
+    joint_states_[i].effort = qfrc_applied[joint_states_[i].mj_vel_adr];
+
+    // RCLCPP_INFO(
+    //   logger_, "Joint %s: pos=%f, vel=%f, eff=%f", joint_states_[i].name.c_str(),
+    //   joint_states_[i].position, joint_states_[i].velocity, joint_states_[i].effort);
   }
   // RCLCPP_INFO(logger_, "Updated joint states from WebSocket data");
   // Update FT sensor data
   for (auto &data : ft_sensor_data_)
   {
-    if (data.force.mj_sensor_index < sensordata.size())
-    {
-      data.force.data.x() = -sensordata[data.force.mj_sensor_index];
-      data.force.data.y() = -sensordata[data.force.mj_sensor_index + 1];
-      data.force.data.z() = -sensordata[data.force.mj_sensor_index + 2];
-    }
+    data.force.data.x() = -sensordata[data.force.mj_sensor_index];
+    data.force.data.y() = -sensordata[data.force.mj_sensor_index + 1];
+    data.force.data.z() = -sensordata[data.force.mj_sensor_index + 2];
 
-    if (data.torque.mj_sensor_index < sensordata.size())
-    {
-      data.torque.data.x() = -sensordata[data.torque.mj_sensor_index];
-      data.torque.data.y() = -sensordata[data.torque.mj_sensor_index + 1];
-      data.torque.data.z() = -sensordata[data.torque.mj_sensor_index + 2];
-    }
+    data.torque.data.x() = -sensordata[data.torque.mj_sensor_index];
+    data.torque.data.y() = -sensordata[data.torque.mj_sensor_index + 1];
+    data.torque.data.z() = -sensordata[data.torque.mj_sensor_index + 2];
   }
 
   // Use centralized odometry publishing
