@@ -53,7 +53,6 @@ public:
 
     // Use the correct IXWebSocket callback API
     ws_.setOnMessageCallback(
-
       [this](const ix::WebSocketMessagePtr &msg)
       {
         if (msg->type == ix::WebSocketMessageType::Message)
@@ -87,6 +86,14 @@ public:
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
+    if (connected_)
+    {
+      // Request model info immediately after connection
+      nlohmann::json cmd;
+      cmd["type"] = "get_model_info";
+      ws_.sendText(cmd.dump());
+    }
+
     return connected_;
   }
 
@@ -98,19 +105,50 @@ public:
     }
   }
 
+  void sendJointControl(const std::string &joint_name, const std::string &mode, double value)
+  {
+    if (connected_)
+    {
+      nlohmann::json cmd;
+      cmd["type"] = "set_joint_control";
+      cmd["joint_name"] = joint_name;
+      cmd["mode"] = mode;
+      cmd["value"] = value;
+      ws_.sendText(cmd.dump());
+    }
+  }
+
+  void sendBulkControl(const std::vector<std::tuple<std::string, std::string, double>> &commands)
+  {
+    if (connected_ && !commands.empty())
+    {
+      nlohmann::json cmd;
+      cmd["type"] = "set_bulk_control";
+      cmd["joints"] = nlohmann::json::array();
+
+      for (const auto &[name, mode, value] : commands)
+      {
+        nlohmann::json joint_cmd;
+        joint_cmd["name"] = name;
+        joint_cmd["mode"] = mode;
+        joint_cmd["value"] = value;
+        cmd["joints"].push_back(joint_cmd);
+      }
+
+      ws_.sendText(cmd.dump());
+    }
+  }
+
   bool getLatestState(
     std::vector<double> &qpos, std::vector<double> &qvel, std::vector<double> &qfrc_applied,
     std::vector<double> &sensordata, double &time)
   {
-    // std::cout << "Getting latest state" << std::endl;
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (!state_received_)
     {
-      // std::cout << "returning false" << std::endl;
-
       return false;
     }
-    // std::cout << "returning true" << std::endl;
+
     qpos = cached_qpos_;
     qvel = cached_qvel_;
     qfrc_applied = cached_qfrc_applied_;
@@ -187,8 +225,6 @@ private:
 
   void handleMessage(const ix::WebSocketMessagePtr &msg)
   {
-    // print that a message was received
-    // std::cout << "Handle" << std::endl;
     if (!msg->binary)
     {
       try
@@ -224,6 +260,11 @@ private:
           }
 
           state_received_ = true;
+        }
+        else if (type == "model_info")
+        {
+          // Store model info if needed
+          std::cout << "Received model info from server" << std::endl;
         }
       }
       catch (const std::exception &e)
@@ -278,63 +319,57 @@ hardware_interface::return_type MujocoSystem::read(
   const rclcpp::Time &time, const rclcpp::Duration & /* period */)
 {
   auto &wsManager = WebSocketManager::getInstance();
-  // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "Inside read function");
+
   if (!wsManager.isConnected())
   {
     RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 1000, "WebSocket not connected");
-    // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "ouch not connected");
     return hardware_interface::return_type::ERROR;
   }
-  // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "So we do have a connection");
-  // RCLCPP_INFO(rclcpp::get_logger("mujoco_ros2_control"), "So we do have a connection2");
 
   std::vector<double> qpos, qvel, qfrc_applied, sensordata;
-  // RCLCPP_INFO(logger_, "declaring random stuff");
   double sim_time;
-  // RCLCPP_INFO(logger_, "declaring random stuff2");
+
   if (!wsManager.getLatestState(qpos, qvel, qfrc_applied, sensordata, sim_time))
   {
-    // std::cout << "false has been returned" << std::endl;
-    // catch exception on this WARN
-    RCLCPP_INFO(logger_, "No fresh state from WebSocket");
-    // std::cout << "No fresh state from WebSocket" << std::endl;
-    return hardware_interface::return_type::OK;  // Don't error, just use old data
+    // No fresh state, but that's OK - we'll use previous values
+    return hardware_interface::return_type::OK;
   }
 
-  // RCLCPP_INFO(logger_, "Received state from WebSocket at sim time: %f", sim_time);
   // Update joint states from WebSocket data
   for (size_t i = 0; i < joint_states_.size(); ++i)
-
   {
-    // print the number of joint for this hardware interface
-    // RCLCPP_INFO(logger_, "Joint %ld/%ld", i + 1, joint_states_.size());
-    // // print all qpos
-    // for (const auto &pos : qpos)
-    // {
-    //   RCLCPP_INFO(logger_, "qpos: %f", pos);
-    // }
+    if (joint_states_[i].mj_pos_adr < qpos.size())
+    {
+      joint_states_[i].position = qpos[joint_states_[i].mj_pos_adr];
+    }
 
-    joint_states_[i].position = qpos[joint_states_[i].mj_pos_adr];
+    if (joint_states_[i].mj_vel_adr < qvel.size())
+    {
+      joint_states_[i].velocity = qvel[joint_states_[i].mj_vel_adr];
+    }
 
-    joint_states_[i].velocity = qvel[joint_states_[i].mj_vel_adr];
-
-    joint_states_[i].effort = qfrc_applied[joint_states_[i].mj_vel_adr];
-
-    // RCLCPP_INFO(
-    //   logger_, "Joint %s: pos=%f, vel=%f, eff=%f", joint_states_[i].name.c_str(),
-    //   joint_states_[i].position, joint_states_[i].velocity, joint_states_[i].effort);
+    if (joint_states_[i].mj_vel_adr < qfrc_applied.size())
+    {
+      joint_states_[i].effort = qfrc_applied[joint_states_[i].mj_vel_adr];
+    }
   }
-  // RCLCPP_INFO(logger_, "Updated joint states from WebSocket data");
+
   // Update FT sensor data
   for (auto &data : ft_sensor_data_)
   {
-    data.force.data.x() = -sensordata[data.force.mj_sensor_index];
-    data.force.data.y() = -sensordata[data.force.mj_sensor_index + 1];
-    data.force.data.z() = -sensordata[data.force.mj_sensor_index + 2];
+    if (data.force.mj_sensor_index + 2 < sensordata.size())
+    {
+      data.force.data.x() = -sensordata[data.force.mj_sensor_index];
+      data.force.data.y() = -sensordata[data.force.mj_sensor_index + 1];
+      data.force.data.z() = -sensordata[data.force.mj_sensor_index + 2];
+    }
 
-    data.torque.data.x() = -sensordata[data.torque.mj_sensor_index];
-    data.torque.data.y() = -sensordata[data.torque.mj_sensor_index + 1];
-    data.torque.data.z() = -sensordata[data.torque.mj_sensor_index + 2];
+    if (data.torque.mj_sensor_index + 2 < sensordata.size())
+    {
+      data.torque.data.x() = -sensordata[data.torque.mj_sensor_index];
+      data.torque.data.y() = -sensordata[data.torque.mj_sensor_index + 1];
+      data.torque.data.z() = -sensordata[data.torque.mj_sensor_index + 2];
+    }
   }
 
   // Use centralized odometry publishing
@@ -381,7 +416,7 @@ hardware_interface::return_type MujocoSystem::write(
         std::max(joint_state.joint_limits.min_position, joint_state.position_command);
     }
 
-    // Handle PID control if enabled (simplified for WebSocket)
+    // Handle PID control if enabled
     if (joint_state.is_pid_enabled && joint_state.is_position_control_enabled)
     {
       double error = joint_state.position_command - joint_state.position;
@@ -412,48 +447,43 @@ hardware_interface::return_type MujocoSystem::write(
     }
   }
 
-  // Send commands via WebSocket
-  nlohmann::json cmd;
-  cmd["type"] = "set_control";
-
-  std::vector<double> control_values;
-  std::vector<double> torque_values;
+  // Send commands via WebSocket using bulk control for efficiency
+  std::vector<std::tuple<std::string, std::string, double>> commands;
 
   for (const auto &joint_state : joint_states_)
   {
-    if (joint_state.is_position_control_enabled)
+    std::string mode;
+    double value = 0.0;
+
+    // Determine control mode and value for this joint
+    if (joint_state.is_position_control_enabled && !joint_state.is_pid_enabled)
     {
-      control_values.push_back(joint_state.position_command);
+      mode = "position";
+      value = joint_state.position_command;
     }
-    else if (joint_state.is_velocity_control_enabled)
+    else if (joint_state.is_velocity_control_enabled && !joint_state.is_pid_enabled)
     {
-      control_values.push_back(joint_state.velocity_command);
+      mode = "velocity";
+      value = joint_state.velocity_command;
+    }
+    else if (joint_state.is_effort_control_enabled || joint_state.is_pid_enabled)
+    {
+      mode = "effort";
+      value = joint_state.effort_command;
     }
     else
     {
-      control_values.push_back(0.0);
+      continue;  // Skip joints with no active control
     }
 
-    if (joint_state.is_effort_control_enabled)
-    {
-      torque_values.push_back(joint_state.effort_command);
-    }
-    else
-    {
-      torque_values.push_back(0.0);
-    }
+    commands.push_back({joint_state.name, mode, value});
   }
 
-  if (!control_values.empty())
+  // Send bulk command if there are any commands to send
+  if (!commands.empty())
   {
-    cmd["control"] = control_values;
+    wsManager.sendBulkControl(commands);
   }
-  if (!torque_values.empty())
-  {
-    cmd["torque"] = torque_values;
-  }
-
-  wsManager.sendCommand(cmd);
 
   return hardware_interface::return_type::OK;
 }
@@ -479,15 +509,29 @@ bool MujocoSystem::init_sim(
   register_joints(urdf_model, hardware_info);
   register_sensors(urdf_model, hardware_info);
 
-  // Send reset command
+  // Send initial reset command with initial joint positions
   nlohmann::json reset_cmd;
   reset_cmd["type"] = "reset";
+  reset_cmd["state"]["qpos"] = std::vector<double>(mj_model_->nq, 0.0);
+  reset_cmd["state"]["qvel"] = std::vector<double>(mj_model_->nv, 0.0);
+
+  // Set initial positions from joint_states_
+  for (const auto &joint_state : joint_states_)
+  {
+    if (joint_state.mj_pos_adr < mj_model_->nq)
+    {
+      reset_cmd["state"]["qpos"][joint_state.mj_pos_adr] = joint_state.position;
+    }
+  }
+
   wsManager.sendCommand(reset_cmd);
+
+  RCLCPP_INFO(logger_, "MujocoSystem initialization complete (WebSocket mode)");
 
   return true;
 }
 
-// Rest of the implementation (register_joints, register_sensors, etc.) remains the same
+// Rest of the implementation remains the same
 void MujocoSystem::register_joints(
   const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info)
 {
@@ -730,18 +774,8 @@ void MujocoSystem::register_sensors(
 
 void MujocoSystem::set_initial_pose()
 {
-  auto &wsManager = WebSocketManager::getInstance();
-  nlohmann::json init_pose_cmd;
-  init_pose_cmd["type"] = "set_initial_pose";
-  std::vector<double> initial_positions;
-
-  for (const auto &joint_state : joint_states_)
-  {
-    initial_positions.push_back(joint_state.position);
-  }
-
-  init_pose_cmd["qpos"] = initial_positions;
-  wsManager.sendCommand(init_pose_cmd);
+  // Initial pose is now set via WebSocket in init_sim
+  // This function is kept for compatibility but doesn't need to do anything
 }
 
 void MujocoSystem::get_joint_limits(
