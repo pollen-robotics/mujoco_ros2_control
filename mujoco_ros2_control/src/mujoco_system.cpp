@@ -29,10 +29,30 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 
+// Camera support includes
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/image.hpp>
+
 namespace mujoco_ros2_control
 {
 
-// Static singleton WebSocket manager with centralized odometry
+// Structure to hold camera publisher information
+struct CameraPublisher
+{
+  std::string name;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_pub;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_pub;
+  bool has_depth;
+  int width;
+  int height;
+  double fovy;
+  std::string frame_name;
+};
+
+// Static singleton WebSocket manager with centralized odometry and camera support
 class WebSocketManager
 {
 public:
@@ -168,8 +188,8 @@ public:
       connected_ = false;
     }
 
-    // Cleanup odometry publisher
-    if (odom_initialized_)
+    // Cleanup odometry and camera publishers
+    if (ros_initialized_)
     {
       if (executor_)
       {
@@ -179,16 +199,16 @@ public:
       {
         spin_thread_.join();
       }
-      odom_initialized_ = false;
+      ros_initialized_ = false;
     }
   }
 
   // Centralized odometry publishing
   void publishOdometry(const rclcpp::Time &time)
   {
-    if (!odom_initialized_)
+    if (!ros_initialized_)
     {
-      initializeOdometry();
+      initializeROS();
     }
 
     if (odom_publisher_)
@@ -209,18 +229,79 @@ private:
 
   ~WebSocketManager() { shutdown(); }
 
-  void initializeOdometry()
+  void initializeROS()
   {
-    if (odom_initialized_) return;
+    if (ros_initialized_) return;
 
-    node_ = rclcpp::Node::make_shared("mujoco_websocket_odom_node");
+    node_ = rclcpp::Node::make_shared("mujoco_websocket_node");
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
     executor_->add_node(node_);
     spin_thread_ = std::thread([this]() { executor_->spin(); });
     odom_publisher_ = node_->create_publisher<nav_msgs::msg::Odometry>("/odom_mujoco", 10);
-    odom_initialized_ = true;
+    ros_initialized_ = true;
 
-    std::cout << "Centralized odometry publisher initialized (WebSocket mode)." << std::endl;
+    std::cout << "ROS2 node initialized (WebSocket mode)." << std::endl;
+  }
+
+  void initializeCameraPublisher(const nlohmann::json &camera_info)
+  {
+    if (!ros_initialized_)
+    {
+      initializeROS();
+    }
+
+    std::string cam_name = camera_info.value("name", "");
+
+    // Check if already initialized
+    if (camera_publishers_.find(cam_name) != camera_publishers_.end())
+    {
+      return;
+    }
+
+    CameraPublisher cam_pub;
+    cam_pub.name = cam_name;
+    cam_pub.width = camera_info.value("width", 320);
+    cam_pub.height = camera_info.value("height", 240);
+    cam_pub.fovy = camera_info.value("fovy", 45.0);
+    cam_pub.frame_name = camera_info.value("frame_name", cam_name + "_optical_frame");
+    cam_pub.has_depth = camera_info.value("has_depth", false);
+
+    // Get topic paths from camera info
+    auto topic_paths = camera_info.value("topic_paths", nlohmann::json::object());
+
+    // Create publishers based on topic paths
+    if (topic_paths.contains("image"))
+    {
+      std::string image_topic = "/" + topic_paths["image"].get<std::string>();
+      cam_pub.image_pub =
+        node_->create_publisher<sensor_msgs::msg::CompressedImage>(image_topic, 10);
+    }
+
+    if (topic_paths.contains("camera_info"))
+    {
+      std::string info_topic = "/" + topic_paths["camera_info"].get<std::string>();
+      cam_pub.camera_info_pub =
+        node_->create_publisher<sensor_msgs::msg::CameraInfo>(info_topic, 10);
+    }
+
+    if (cam_pub.has_depth)
+    {
+      if (topic_paths.contains("depth_image"))
+      {
+        std::string depth_topic = "/" + topic_paths["depth_image"].get<std::string>();
+        cam_pub.depth_pub = node_->create_publisher<sensor_msgs::msg::Image>(depth_topic, 10);
+      }
+
+      if (topic_paths.contains("depth_camera_info"))
+      {
+        std::string depth_info_topic = "/" + topic_paths["depth_camera_info"].get<std::string>();
+        cam_pub.depth_info_pub =
+          node_->create_publisher<sensor_msgs::msg::CameraInfo>(depth_info_topic, 10);
+      }
+    }
+
+    camera_publishers_[cam_name] = cam_pub;
+    std::cout << "Initialized camera publisher for: " << cam_name << std::endl;
   }
 
   void handleMessage(const ix::WebSocketMessagePtr &msg)
@@ -263,14 +344,156 @@ private:
         }
         else if (type == "model_info")
         {
-          // Store model info if needed
+          // Store model info and initialize camera publishers if needed
           std::cout << "Received model info from server" << std::endl;
+
+          if (j.contains("cameras") && j["cameras"].is_array())
+          {
+            for (const auto &cam_info : j["cameras"])
+            {
+              initializeCameraPublisher(cam_info);
+            }
+          }
+        }
+        else if (type == "camera_frame")
+        {
+          // Store camera frame header for processing with binary data
+          pending_camera_frame_ = j;
+          expecting_camera_binary_ = true;
+          binary_frames_expected_ = 1;  // RGB data
+          if (j.value("has_depth", false))
+          {
+            binary_frames_expected_ = 2;  // RGB + depth data
+          }
+          binary_frames_received_ = 0;
         }
       }
       catch (const std::exception &e)
       {
         std::cerr << "WebSocket JSON parse error: " << e.what() << std::endl;
       }
+    }
+    else
+    {
+      // Handle binary camera data
+      if (expecting_camera_binary_ && binary_frames_received_ < binary_frames_expected_)
+      {
+        if (binary_frames_received_ == 0)
+        {
+          // First binary frame is RGB JPEG data
+          processCameraRGBData(msg->str);
+          binary_frames_received_++;
+        }
+        else if (binary_frames_received_ == 1)
+        {
+          // Second binary frame is depth data (if present)
+          processCameraDepthData(msg->str);
+          binary_frames_received_++;
+        }
+
+        if (binary_frames_received_ >= binary_frames_expected_)
+        {
+          expecting_camera_binary_ = false;
+          pending_camera_frame_.clear();
+        }
+      }
+    }
+  }
+
+  void processCameraRGBData(const std::string &jpeg_data)
+  {
+    if (!ros_initialized_ || pending_camera_frame_.empty()) return;
+
+    std::string cam_name = pending_camera_frame_.value("camera_name", "");
+    auto it = camera_publishers_.find(cam_name);
+    if (it == camera_publishers_.end()) return;
+
+    auto &cam_pub = it->second;
+
+    // Get current time
+    auto now = node_->get_clock()->now();
+
+    // Publish compressed image
+    if (cam_pub.image_pub)
+    {
+      auto compressed_img = sensor_msgs::msg::CompressedImage();
+      compressed_img.header.stamp = now;
+      compressed_img.header.frame_id = cam_pub.frame_name;
+      compressed_img.format = "jpeg";
+      compressed_img.data.assign(jpeg_data.begin(), jpeg_data.end());
+      cam_pub.image_pub->publish(compressed_img);
+    }
+
+    // Publish camera info
+    if (cam_pub.camera_info_pub)
+    {
+      auto cam_info = sensor_msgs::msg::CameraInfo();
+      cam_info.header.stamp = now;
+      cam_info.header.frame_id = cam_pub.frame_name;
+      cam_info.height = cam_pub.height;
+      cam_info.width = cam_pub.width;
+
+      // Simple pinhole camera model
+      double fx = cam_pub.width / (2.0 * tan(cam_pub.fovy * M_PI / 360.0));
+      double fy = fx;
+      double cx = cam_pub.width / 2.0;
+      double cy = cam_pub.height / 2.0;
+
+      cam_info.k = {fx, 0, cx, 0, fy, cy, 0, 0, 1};
+      cam_info.p = {fx, 0, cx, 0, 0, fy, cy, 0, 0, 0, 1, 0};
+      cam_info.r = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+
+      cam_pub.camera_info_pub->publish(cam_info);
+    }
+  }
+
+  void processCameraDepthData(const std::string &depth_data)
+  {
+    if (!ros_initialized_ || pending_camera_frame_.empty()) return;
+
+    std::string cam_name = pending_camera_frame_.value("camera_name", "");
+    auto it = camera_publishers_.find(cam_name);
+    if (it == camera_publishers_.end()) return;
+
+    auto &cam_pub = it->second;
+
+    if (!cam_pub.has_depth || !cam_pub.depth_pub) return;
+
+    // Get current time
+    auto now = node_->get_clock()->now();
+
+    // Publish depth image
+    auto depth_img = sensor_msgs::msg::Image();
+    depth_img.header.stamp = now;
+    depth_img.header.frame_id = cam_pub.frame_name;
+    depth_img.height = cam_pub.height;
+    depth_img.width = cam_pub.width;
+    depth_img.encoding = pending_camera_frame_.value("depth_encoding", "32FC1");
+    depth_img.is_bigendian = false;
+    depth_img.step = cam_pub.width * sizeof(float);
+    depth_img.data.assign(depth_data.begin(), depth_data.end());
+    cam_pub.depth_pub->publish(depth_img);
+
+    // Publish depth camera info
+    if (cam_pub.depth_info_pub)
+    {
+      auto cam_info = sensor_msgs::msg::CameraInfo();
+      cam_info.header.stamp = now;
+      cam_info.header.frame_id = cam_pub.frame_name;
+      cam_info.height = cam_pub.height;
+      cam_info.width = cam_pub.width;
+
+      // Simple pinhole camera model
+      double fx = cam_pub.width / (2.0 * tan(cam_pub.fovy * M_PI / 360.0));
+      double fy = fx;
+      double cx = cam_pub.width / 2.0;
+      double cy = cam_pub.height / 2.0;
+
+      cam_info.k = {fx, 0, cx, 0, fy, cy, 0, 0, 1};
+      cam_info.p = {fx, 0, cx, 0, 0, fy, cy, 0, 0, 0, 1, 0};
+      cam_info.r = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+
+      cam_pub.depth_info_pub->publish(cam_info);
     }
   }
 
@@ -286,9 +509,16 @@ private:
   std::vector<double> cached_sensor_data_;
   double cached_time_ = 0.0;
 
-  // Centralized odometry members
-  bool odom_initialized_ = false;
+  // Camera frame processing
+  nlohmann::json pending_camera_frame_;
+  bool expecting_camera_binary_ = false;
+  int binary_frames_expected_ = 0;
+  int binary_frames_received_ = 0;
+
+  // Centralized ROS members
+  bool ros_initialized_ = false;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
+  std::map<std::string, CameraPublisher> camera_publishers_;
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
@@ -526,7 +756,7 @@ bool MujocoSystem::init_sim(
 
   wsManager.sendCommand(reset_cmd);
 
-  RCLCPP_INFO(logger_, "MujocoSystem initialization complete (WebSocket mode)");
+  RCLCPP_INFO(logger_, "MujocoSystem initialization complete (WebSocket mode with camera support)");
 
   return true;
 }
