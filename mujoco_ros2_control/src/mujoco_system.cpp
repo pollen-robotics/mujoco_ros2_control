@@ -89,7 +89,8 @@ public:
     return instance;
   }
 
-  bool connect(const std::string &url = "ws://127.0.0.1:8765")
+  // bool connect(const std::string &url = "ws://127.0.0.1:8765")
+  bool connect(const std::string &url = "ws://host.docker.internal:8765")
   {
     if (connected_)
     {
