@@ -37,6 +37,10 @@
 // Tracked bodies support includes
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
+// Odometry support includes
+#include <geometry_msgs/msg/twist.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+
 namespace mujoco_ros2_control
 {
 
@@ -62,6 +66,17 @@ struct TrackedBodyPublisher
   int body_id;
   std::string frame_id;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;
+};
+
+// Structure to hold odometry data
+struct OdometryData
+{
+  std::string frame_id;
+  std::string child_frame_id;
+  std::vector<double> position;          // [x, y, z]
+  std::vector<double> orientation;       // [w, x, y, z] quaternion
+  std::vector<double> linear_velocity;   // [vx, vy, vz]
+  std::vector<double> angular_velocity;  // [wx, wy, wz]
 };
 
 // Static singleton WebSocket manager with centralized odometry, camera, and tracked bodies support
@@ -173,7 +188,7 @@ public:
 
   bool getLatestState(
     std::vector<double> &qpos, std::vector<double> &qvel, std::vector<double> &qfrc_applied,
-    std::vector<double> &sensordata, double &time)
+    std::vector<double> &sensordata, double &time, OdometryData &odom_data)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (!state_received_)
@@ -186,6 +201,7 @@ public:
     qfrc_applied = cached_qfrc_applied_;
     sensordata = cached_sensor_data_;
     time = cached_time_;
+    odom_data = cached_odom_data_;
 
     return true;
   }
@@ -215,23 +231,79 @@ public:
     }
   }
 
-  // Centralized odometry publishing
-  void publishOdometry(const rclcpp::Time &time)
+  // Centralized odometry publishing with actual data
+  void publishOdometry(const rclcpp::Time &time, const OdometryData &odom_data)
   {
     if (!ros_initialized_)
     {
       initializeROS();
     }
 
-    if (odom_publisher_)
+    if (odom_publisher_ && !odom_data.position.empty() && !odom_data.orientation.empty())
     {
       auto odom = nav_msgs::msg::Odometry();
+
+      // Set header
       odom.header.stamp = builtin_interfaces::msg::Time();
       odom.header.stamp.sec = static_cast<int32_t>(time.seconds());
       odom.header.stamp.nanosec =
         static_cast<uint32_t>((time.seconds() - odom.header.stamp.sec) * 1e9);
-      odom.header.frame_id = "odom_mujoco";
-      odom.child_frame_id = "base_link";
+      odom.header.frame_id = odom_data.frame_id.empty() ? "odom_mujoco" : odom_data.frame_id;
+      odom.child_frame_id =
+        odom_data.child_frame_id.empty() ? "base_link" : odom_data.child_frame_id;
+
+      // Set position
+      if (odom_data.position.size() >= 3)
+      {
+        odom.pose.pose.position.x = odom_data.position[0];
+        odom.pose.pose.position.y = odom_data.position[1];
+        odom.pose.pose.position.z = odom_data.position[2];
+      }
+
+      // Set orientation
+      if (odom_data.orientation.size() >= 4)
+      {
+        odom.pose.pose.orientation.w = odom_data.orientation[0];
+        odom.pose.pose.orientation.x = odom_data.orientation[1];
+        odom.pose.pose.orientation.y = odom_data.orientation[2];
+        odom.pose.pose.orientation.z = odom_data.orientation[3];
+      }
+
+      // Set linear velocity
+      if (odom_data.linear_velocity.size() >= 3)
+      {
+        odom.twist.twist.linear.x = odom_data.linear_velocity[0];
+        odom.twist.twist.linear.y = odom_data.linear_velocity[1];
+        odom.twist.twist.linear.z = odom_data.linear_velocity[2];
+      }
+
+      // Set angular velocity
+      if (odom_data.angular_velocity.size() >= 3)
+      {
+        odom.twist.twist.angular.x = odom_data.angular_velocity[0];
+        odom.twist.twist.angular.y = odom_data.angular_velocity[1];
+        odom.twist.twist.angular.z = odom_data.angular_velocity[2];
+      }
+
+      // Set covariance matrices (simple diagonal covariance)
+      std::fill(odom.pose.covariance.begin(), odom.pose.covariance.end(), 0.0);
+      std::fill(odom.twist.covariance.begin(), odom.twist.covariance.end(), 0.0);
+
+      // Set some reasonable covariance values (you can tune these)
+      odom.pose.covariance[0] = 0.001;   // x position variance
+      odom.pose.covariance[7] = 0.001;   // y position variance
+      odom.pose.covariance[14] = 0.001;  // z position variance
+      odom.pose.covariance[21] = 0.001;  // roll variance
+      odom.pose.covariance[28] = 0.001;  // pitch variance
+      odom.pose.covariance[35] = 0.001;  // yaw variance
+
+      odom.twist.covariance[0] = 0.001;   // vx variance
+      odom.twist.covariance[7] = 0.001;   // vy variance
+      odom.twist.covariance[14] = 0.001;  // vz variance
+      odom.twist.covariance[21] = 0.001;  // wx variance
+      odom.twist.covariance[28] = 0.001;  // wy variance
+      odom.twist.covariance[35] = 0.001;  // wz variance
+
       odom_publisher_->publish(odom);
     }
   }
@@ -378,6 +450,44 @@ private:
           if (state.contains("sensordata") && state["sensordata"].is_array())
           {
             cached_sensor_data_ = state["sensordata"].get<std::vector<double>>();
+          }
+
+          // Extract odometry data if available
+          if (state.contains("odometry") && state["odometry"].is_object())
+          {
+            auto odom = state["odometry"];
+            cached_odom_data_.frame_id = odom.value("frame_id", "odom_mujoco");
+            cached_odom_data_.child_frame_id = odom.value("child_frame_id", "base_link");
+
+            if (odom.contains("position") && odom["position"].is_array())
+            {
+              cached_odom_data_.position = odom["position"].get<std::vector<double>>();
+            }
+
+            if (odom.contains("orientation") && odom["orientation"].is_array())
+            {
+              cached_odom_data_.orientation = odom["orientation"].get<std::vector<double>>();
+            }
+
+            if (odom.contains("linear_velocity") && odom["linear_velocity"].is_array())
+            {
+              cached_odom_data_.linear_velocity =
+                odom["linear_velocity"].get<std::vector<double>>();
+            }
+
+            if (odom.contains("angular_velocity") && odom["angular_velocity"].is_array())
+            {
+              cached_odom_data_.angular_velocity =
+                odom["angular_velocity"].get<std::vector<double>>();
+            }
+          }
+          else
+          {
+            // Clear odometry data if not available
+            cached_odom_data_.position.clear();
+            cached_odom_data_.orientation.clear();
+            cached_odom_data_.linear_velocity.clear();
+            cached_odom_data_.angular_velocity.clear();
           }
 
           state_received_ = true;
@@ -625,6 +735,7 @@ private:
   std::vector<double> cached_qfrc_applied_;
   std::vector<double> cached_sensor_data_;
   double cached_time_ = 0.0;
+  OdometryData cached_odom_data_;  // New: cached odometry data
 
   // Camera frame processing
   nlohmann::json pending_camera_frame_;
@@ -677,8 +788,9 @@ hardware_interface::return_type MujocoSystem::read(
 
   std::vector<double> qpos, qvel, qfrc_applied, sensordata;
   double sim_time;
+  OdometryData odom_data;
 
-  if (!wsManager.getLatestState(qpos, qvel, qfrc_applied, sensordata, sim_time))
+  if (!wsManager.getLatestState(qpos, qvel, qfrc_applied, sensordata, sim_time, odom_data))
   {
     // No fresh state, but that's OK - we'll use previous values
     return hardware_interface::return_type::OK;
@@ -721,8 +833,8 @@ hardware_interface::return_type MujocoSystem::read(
     }
   }
 
-  // Use centralized odometry publishing
-  wsManager.publishOdometry(time);
+  // Use centralized odometry publishing with actual data
+  wsManager.publishOdometry(time, odom_data);
 
   return hardware_interface::return_type::OK;
 }
@@ -877,12 +989,12 @@ bool MujocoSystem::init_sim(
 
   RCLCPP_INFO(
     logger_,
-    "MujocoSystem initialization complete (WebSocket mode with camera and tracked bodies support)");
+    "MujocoSystem initialization complete (WebSocket mode with camera, tracked bodies, and "
+    "odometry support)");
 
   return true;
 }
 
-// Rest of the implementation remains the same
 void MujocoSystem::register_joints(
   const urdf::Model &urdf_model, const hardware_interface::HardwareInfo &hardware_info)
 {
