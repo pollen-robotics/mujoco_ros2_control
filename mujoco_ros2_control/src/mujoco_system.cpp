@@ -568,17 +568,17 @@ hardware_interface::return_type MujocoSystem::read(
   // Update joint states from WebSocket data
   for (size_t i = 0; i < joint_states_.size(); ++i)
   {
-    if (joint_states_[i].mj_pos_adr < qpos.size())
+    if (static_cast<size_t>(joint_states_[i].mj_pos_adr) < qpos.size())
     {
       joint_states_[i].position = qpos[joint_states_[i].mj_pos_adr];
     }
 
-    if (joint_states_[i].mj_vel_adr < qvel.size())
+    if (static_cast<size_t>(joint_states_[i].mj_vel_adr) < qvel.size())
     {
       joint_states_[i].velocity = qvel[joint_states_[i].mj_vel_adr];
     }
 
-    if (joint_states_[i].mj_vel_adr < qfrc_applied.size())
+    if (static_cast<size_t>(joint_states_[i].mj_vel_adr) < qfrc_applied.size())
     {
       joint_states_[i].effort = qfrc_applied[joint_states_[i].mj_vel_adr];
     }
@@ -587,14 +587,14 @@ hardware_interface::return_type MujocoSystem::read(
   // Update FT sensor data
   for (auto &data : ft_sensor_data_)
   {
-    if (data.force.mj_sensor_index + 2 < sensordata.size())
+    if (static_cast<size_t>(data.force.mj_sensor_index + 2) < sensordata.size())
     {
       data.force.data.x() = -sensordata[data.force.mj_sensor_index];
       data.force.data.y() = -sensordata[data.force.mj_sensor_index + 1];
       data.force.data.z() = -sensordata[data.force.mj_sensor_index + 2];
     }
 
-    if (data.torque.mj_sensor_index + 2 < sensordata.size())
+    if (static_cast<size_t>(data.torque.mj_sensor_index + 2) < sensordata.size())
     {
       data.torque.data.x() = -sensordata[data.torque.mj_sensor_index];
       data.torque.data.y() = -sensordata[data.torque.mj_sensor_index + 1];
