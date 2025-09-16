@@ -1,0 +1,3 @@
+[submodule "mujoco_ros2_control/IXWebSocket"]
+	path = mujoco_ros2_control/IXWebSocket
+	url = https://github.com/machinezone/IXWebSocket.git
