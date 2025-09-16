@@ -34,6 +34,9 @@
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
+// Tracked bodies support includes
+#include <geometry_msgs/msg/pose_stamped.hpp>
+
 namespace mujoco_ros2_control
 {
 
@@ -52,7 +55,16 @@ struct CameraPublisher
   std::string frame_name;
 };
 
-// Static singleton WebSocket manager with centralized odometry and camera support
+// Structure to hold tracked body publisher information
+struct TrackedBodyPublisher
+{
+  std::string name;
+  int body_id;
+  std::string frame_id;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;
+};
+
+// Static singleton WebSocket manager with centralized odometry, camera, and tracked bodies support
 class WebSocketManager
 {
 public:
@@ -188,7 +200,7 @@ public:
       connected_ = false;
     }
 
-    // Cleanup odometry and camera publishers
+    // Cleanup odometry, camera, and tracked body publishers
     if (ros_initialized_)
     {
       if (executor_)
@@ -304,6 +316,34 @@ private:
     std::cout << "Initialized camera publisher for: " << cam_name << std::endl;
   }
 
+  void initializeTrackedBodyPublisher(
+    const std::string &body_name, int body_id, const std::string &frame_id)
+  {
+    if (!ros_initialized_)
+    {
+      initializeROS();
+    }
+
+    // Check if already initialized
+    if (tracked_body_publishers_.find(body_name) != tracked_body_publishers_.end())
+    {
+      return;
+    }
+
+    TrackedBodyPublisher body_pub;
+    body_pub.name = body_name;
+    body_pub.body_id = body_id;
+    body_pub.frame_id = frame_id;
+
+    // Create pose publisher using the same topic pattern as your original C++ code
+    std::string pose_topic = "/mujoco/item_position";
+    body_pub.pose_pub = node_->create_publisher<geometry_msgs::msg::PoseStamped>(pose_topic, 10);
+
+    tracked_body_publishers_[body_name] = body_pub;
+    std::cout << "Initialized tracked body publisher for: " << body_name << " (ID: " << body_id
+              << ")" << std::endl;
+  }
+
   void handleMessage(const ix::WebSocketMessagePtr &msg)
   {
     if (!msg->binary)
@@ -355,6 +395,11 @@ private:
             }
           }
         }
+        else if (type == "tracked_bodies")
+        {
+          // Handle tracked bodies data
+          processTrackedBodies(j);
+        }
         else if (type == "camera_frame")
         {
           // Store camera frame header for processing with binary data
@@ -397,6 +442,78 @@ private:
           pending_camera_frame_.clear();
         }
       }
+    }
+  }
+
+  void processTrackedBodies(const nlohmann::json &tracked_bodies_msg)
+  {
+    if (!ros_initialized_)
+    {
+      initializeROS();
+    }
+
+    if (!tracked_bodies_msg.contains("bodies") || !tracked_bodies_msg["bodies"].is_array())
+    {
+      return;
+    }
+
+    // Get simulation time from the message
+    double sim_time = tracked_bodies_msg.value("time", 0.0);
+
+    // Convert to ROS time
+    auto ros_time = rclcpp::Time(static_cast<int64_t>(sim_time * 1e9), RCL_ROS_TIME);
+
+    for (const auto &body_data : tracked_bodies_msg["bodies"])
+    {
+      if (!body_data.is_object()) continue;
+
+      std::string body_name = body_data.value("name", "");
+      int body_id = body_data.value("body_id", -1);
+      std::string frame_id = body_data.value("frame_id", body_name);
+
+      if (body_name.empty()) continue;
+
+      // Initialize publisher if not exists
+      if (tracked_body_publishers_.find(body_name) == tracked_body_publishers_.end())
+      {
+        initializeTrackedBodyPublisher(body_name, body_id, frame_id);
+      }
+
+      auto &body_pub = tracked_body_publishers_[body_name];
+
+      // Extract position and orientation arrays
+      if (!body_data.contains("position") || !body_data.contains("orientation")) continue;
+
+      auto position = body_data["position"];
+      auto orientation = body_data["orientation"];
+
+      if (
+        !position.is_array() || position.size() != 3 || !orientation.is_array() ||
+        orientation.size() != 4)
+      {
+        continue;
+      }
+
+      // Create and publish PoseStamped message
+      auto pose_msg = geometry_msgs::msg::PoseStamped();
+      pose_msg.header.stamp = ros_time;
+      pose_msg.header.frame_id = frame_id;  // Use frame_id from the message
+
+      // Set position (x, y, z)
+      pose_msg.pose.position.x = position[0].get<double>();
+      pose_msg.pose.position.y = position[1].get<double>();
+      pose_msg.pose.position.z = position[2].get<double>();
+
+      // Set orientation (w, x, y, z - MuJoCo format)
+      pose_msg.pose.orientation.w = orientation[0].get<double>();
+      pose_msg.pose.orientation.x = orientation[1].get<double>();
+      pose_msg.pose.orientation.y = orientation[2].get<double>();
+      pose_msg.pose.orientation.z = orientation[3].get<double>();
+
+      body_pub.pose_pub->publish(pose_msg);
+
+      // Small delay to let publish do its work (matching your original C++ implementation)
+      std::this_thread::sleep_for(std::chrono::microseconds(5000));
     }
   }
 
@@ -519,6 +636,8 @@ private:
   bool ros_initialized_ = false;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   std::map<std::string, CameraPublisher> camera_publishers_;
+  std::map<std::string, TrackedBodyPublisher>
+    tracked_body_publishers_;  // New: tracked body publishers
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
@@ -756,7 +875,9 @@ bool MujocoSystem::init_sim(
 
   wsManager.sendCommand(reset_cmd);
 
-  RCLCPP_INFO(logger_, "MujocoSystem initialization complete (WebSocket mode with camera support)");
+  RCLCPP_INFO(
+    logger_,
+    "MujocoSystem initialization complete (WebSocket mode with camera and tracked bodies support)");
 
   return true;
 }
