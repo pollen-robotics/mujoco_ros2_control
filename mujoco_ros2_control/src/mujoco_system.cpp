@@ -19,6 +19,12 @@
 // THE SOFTWARE.
 
 #include "mujoco_ros2_control/mujoco_system.hpp"
+
+// Forward declarations to avoid direct mujoco dependency
+struct mjModel_;
+struct mjData_;
+typedef struct mjModel_ mjModel;
+typedef struct mjData_ mjData;
 #include "builtin_interfaces/msg/time.hpp"
 #include "rclcpp/time.hpp"
 
@@ -79,6 +85,60 @@ struct OdometryData
   std::vector<double> angular_velocity;  // [wx, wy, wz]
 };
 
+// Robot description structure to replace Mujoco model queries
+struct RobotDescription
+{
+  struct JointInfo
+  {
+    std::string name;
+    int joint_type;
+    int pos_adr;
+    int vel_adr;
+    int act_adr;
+  };
+
+  struct SensorInfo
+  {
+    std::string name;
+    int sensor_adr;
+  };
+
+  struct ModelDimensions
+  {
+    int nq;  // number of positions
+    int nv;  // number of velocities
+  };
+
+  ModelDimensions dimensions;
+  std::vector<JointInfo> joints;
+  std::vector<SensorInfo> sensors;
+
+  // Helper methods
+  int findJointIndex(const std::string &name) const
+  {
+    for (size_t i = 0; i < joints.size(); ++i)
+    {
+      if (joints[i].name == name)
+      {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+
+  int findSensorIndex(const std::string &name) const
+  {
+    for (size_t i = 0; i < sensors.size(); ++i)
+    {
+      if (sensors[i].name == name)
+      {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+};
+
 // Static singleton WebSocket manager with centralized odometry, camera, and tracked bodies support
 class WebSocketManager
 {
@@ -91,6 +151,7 @@ public:
 
   // bool connect(const std::string &url = "ws://127.0.0.1:8765")
   bool connect(const std::string &url = "ws://host.docker.internal:8765")
+  // bool connect(const std::string &url = "ws://192.168.1.94:8765")
   {
     if (connected_)
     {
@@ -136,10 +197,15 @@ public:
 
     if (connected_)
     {
-      // Request model info immediately after connection
+      // Request model info and robot description immediately after connection
       nlohmann::json cmd;
       cmd["type"] = "get_model_info";
       ws_.sendText(cmd.dump());
+
+      // Request robot description for joint and sensor mapping
+      nlohmann::json desc_cmd;
+      desc_cmd["type"] = "get_description";
+      ws_.sendText(desc_cmd.dump());
     }
 
     return connected_;
@@ -208,6 +274,18 @@ public:
   }
 
   bool isConnected() const { return connected_; }
+
+  const RobotDescription& getRobotDescription() const
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return robot_description_;
+  }
+
+  bool hasRobotDescription() const
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return description_received_;
+  }
 
   void shutdown()
   {
@@ -506,6 +584,11 @@ private:
             }
           }
         }
+        else if (type == "description")
+        {
+          // Handle robot description response
+          processRobotDescription(j);
+        }
         else if (type == "tracked_bodies")
         {
           // Handle tracked bodies data
@@ -553,6 +636,70 @@ private:
           pending_camera_frame_.clear();
         }
       }
+    }
+  }
+
+  void processRobotDescription(const nlohmann::json &description_msg)
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
+    std::cout << "Received robot description from server" << std::endl;
+
+    try
+    {
+      // Parse model dimensions
+      if (description_msg.contains("dimensions"))
+      {
+        auto dims = description_msg["dimensions"];
+        robot_description_.dimensions.nq = dims.value("nq", 0);
+        robot_description_.dimensions.nv = dims.value("nv", 0);
+      }
+
+      // Parse joint information
+      if (description_msg.contains("joints") && description_msg["joints"].is_array())
+      {
+        robot_description_.joints.clear();
+        for (const auto &joint_data : description_msg["joints"])
+        {
+          RobotDescription::JointInfo joint_info;
+          joint_info.name = joint_data.value("name", "");
+          joint_info.joint_type = joint_data.value("joint_type", 0);
+          joint_info.pos_adr = joint_data.value("pos_adr", -1);
+          joint_info.vel_adr = joint_data.value("vel_adr", -1);
+          joint_info.act_adr = joint_data.value("act_adr", -1);
+
+          if (!joint_info.name.empty())
+          {
+            robot_description_.joints.push_back(joint_info);
+          }
+        }
+      }
+
+      // Parse sensor information
+      if (description_msg.contains("sensors") && description_msg["sensors"].is_array())
+      {
+        robot_description_.sensors.clear();
+        for (const auto &sensor_data : description_msg["sensors"])
+        {
+          RobotDescription::SensorInfo sensor_info;
+          sensor_info.name = sensor_data.value("name", "");
+          sensor_info.sensor_adr = sensor_data.value("sensor_adr", -1);
+
+          if (!sensor_info.name.empty())
+          {
+            robot_description_.sensors.push_back(sensor_info);
+          }
+        }
+      }
+
+      description_received_ = true;
+      std::cout << "Robot description parsed successfully: "
+                << robot_description_.joints.size() << " joints, "
+                << robot_description_.sensors.size() << " sensors" << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+      std::cerr << "Error parsing robot description: " << e.what() << std::endl;
     }
   }
 
@@ -726,9 +873,11 @@ private:
   }
 
   ix::WebSocket ws_;
-  std::mutex state_mutex_;
+  mutable std::mutex state_mutex_;
   bool connected_ = false;
   bool state_received_ = false;
+  bool description_received_ = false;
+  RobotDescription robot_description_;
 
   // Cached state
   std::vector<double> cached_qpos_;
@@ -954,6 +1103,7 @@ bool MujocoSystem::init_sim(
   mjModel *mujoco_model, mjData *mujoco_data, const urdf::Model &urdf_model,
   const hardware_interface::HardwareInfo &hardware_info)
 {
+  // Store for compatibility but will be removed later
   mj_model_ = mujoco_model;
   mj_data_ = mujoco_data;
   logger_ = rclcpp::get_logger("mujoco_system");
@@ -966,21 +1116,32 @@ bool MujocoSystem::init_sim(
     return false;
   }
 
-  RCLCPP_INFO(logger_, "Connected to MuJoCo WebSocket server");
+  RCLCPP_INFO(logger_, "Connected to WebSocket server");
+
+  // Wait for robot description
+  while (!wsManager.hasRobotDescription())
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  RCLCPP_INFO(logger_, "Robot description received");
 
   register_joints(urdf_model, hardware_info);
   register_sensors(urdf_model, hardware_info);
 
+  // Get robot description for reset command
+  const auto &robot_desc = wsManager.getRobotDescription();
+
   // Send initial reset command with initial joint positions
   nlohmann::json reset_cmd;
   reset_cmd["type"] = "reset";
-  reset_cmd["state"]["qpos"] = std::vector<double>(mj_model_->nq, 0.0);
-  reset_cmd["state"]["qvel"] = std::vector<double>(mj_model_->nv, 0.0);
+  reset_cmd["state"]["qpos"] = std::vector<double>(robot_desc.dimensions.nq, 0.0);
+  reset_cmd["state"]["qvel"] = std::vector<double>(robot_desc.dimensions.nv, 0.0);
 
   // Set initial positions from joint_states_
   for (const auto &joint_state : joint_states_)
   {
-    if (joint_state.mj_pos_adr < mj_model_->nq)
+    if (joint_state.mj_pos_adr < robot_desc.dimensions.nq && joint_state.mj_pos_adr >= 0)
     {
       reset_cmd["state"]["qpos"][joint_state.mj_pos_adr] = joint_state.position;
     }
@@ -1001,24 +1162,30 @@ void MujocoSystem::register_joints(
 {
   joint_states_.resize(hardware_info.joints.size());
 
+  // Get robot description from WebSocket manager
+  auto &wsManager = WebSocketManager::getInstance();
+  const auto &robot_desc = wsManager.getRobotDescription();
+
   for (size_t joint_index = 0; joint_index < hardware_info.joints.size(); joint_index++)
   {
     auto joint = hardware_info.joints.at(joint_index);
-    int mujoco_joint_id = mj_name2id(mj_model_, mjtObj::mjOBJ_JOINT, joint.name.c_str());
-    if (mujoco_joint_id == -1)
+    int joint_desc_index = robot_desc.findJointIndex(joint.name);
+    if (joint_desc_index == -1)
     {
       RCLCPP_ERROR_STREAM(
-        logger_, "Failed to find joint in mujoco model, joint name: " << joint.name);
+        logger_, "Failed to find joint in robot description, joint name: " << joint.name);
       continue;
     }
+
+    const auto &joint_info = robot_desc.joints[joint_desc_index];
 
     // save information in joint_states_ variable
     JointState joint_state;
     joint_state.name = joint.name;
-    joint_state.mj_joint_type = mj_model_->jnt_type[mujoco_joint_id];
-    joint_state.mj_pos_adr = mj_model_->jnt_qposadr[mujoco_joint_id];
-    joint_state.mj_vel_adr = mj_model_->jnt_dofadr[mujoco_joint_id];
-    joint_state.mj_act_adr = mj_name2id(mj_model_, mjOBJ_ACTUATOR, joint.name.c_str());
+    joint_state.mj_joint_type = joint_info.joint_type;
+    joint_state.mj_pos_adr = joint_info.pos_adr;
+    joint_state.mj_vel_adr = joint_info.vel_adr;
+    joint_state.mj_act_adr = joint_info.act_adr;
     joint_states_.at(joint_index) = joint_state;
     JointState &last_joint_state = joint_states_.at(joint_index);
 
@@ -1173,6 +1340,10 @@ void MujocoSystem::register_sensors(
 {
   ft_sensor_data_.resize(hardware_info.sensors.size());
 
+  // Get robot description from WebSocket manager
+  auto &wsManager = WebSocketManager::getInstance();
+  const auto &robot_desc = wsManager.getRobotDescription();
+
   for (size_t sensor_index = 0; sensor_index < hardware_info.sensors.size(); sensor_index++)
   {
     auto sensor = hardware_info.sensors.at(sensor_index);
@@ -1182,20 +1353,18 @@ void MujocoSystem::register_sensors(
     sensor_data.force.name = sensor.name + "_force";
     sensor_data.torque.name = sensor.name + "_torque";
 
-    int force_sensor_id =
-      mj_name2id(mj_model_, mjtObj::mjOBJ_SENSOR, sensor_data.force.name.c_str());
-    int torque_sensor_id =
-      mj_name2id(mj_model_, mjtObj::mjOBJ_SENSOR, sensor_data.torque.name.c_str());
+    int force_sensor_index = robot_desc.findSensorIndex(sensor_data.force.name);
+    int torque_sensor_index = robot_desc.findSensorIndex(sensor_data.torque.name);
 
-    if (force_sensor_id == -1 || torque_sensor_id == -1)
+    if (force_sensor_index == -1 || torque_sensor_index == -1)
     {
       RCLCPP_ERROR_STREAM(
-        logger_, "Failed to find sensor in mujoco model, sensor name: " << sensor.name);
+        logger_, "Failed to find sensor in robot description, sensor name: " << sensor.name);
       continue;
     }
 
-    sensor_data.force.mj_sensor_index = mj_model_->sensor_adr[force_sensor_id];
-    sensor_data.torque.mj_sensor_index = mj_model_->sensor_adr[torque_sensor_id];
+    sensor_data.force.mj_sensor_index = robot_desc.sensors[force_sensor_index].sensor_adr;
+    sensor_data.torque.mj_sensor_index = robot_desc.sensors[torque_sensor_index].sensor_adr;
 
     ft_sensor_data_.at(sensor_index) = sensor_data;
     auto &last_sensor_data = ft_sensor_data_.at(sensor_index);

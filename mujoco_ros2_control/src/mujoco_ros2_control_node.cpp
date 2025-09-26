@@ -18,7 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-#include "mujoco/mujoco.h"
 #include "rclcpp/rclcpp.hpp"
 
 #include "mujoco_ros2_control/mujoco_ros2_control.hpp"
@@ -28,9 +27,7 @@
 #include <vector>
 // TODO merge with inner mujoco ros2 control
 
-// MuJoCo data structures - only used for joint/sensor mapping, not simulation
-mjModel *mujoco_model = nullptr;
-mjData *mujoco_data = nullptr;
+// No longer need actual MuJoCo model - robot description comes from WebSocket server
 
 // main function
 int main(int argc, const char **argv)
@@ -42,35 +39,13 @@ int main(int argc, const char **argv)
 
   RCLCPP_INFO_STREAM(
     node->get_logger(), "Initializing mujoco_ros2_control node (WebSocket mode)...");
-  auto model_path = node->get_parameter("mujoco_model_path").as_string();
 
-  // Load model only for joint/sensor information (not for simulation)
-  // The actual simulation runs on the external MuJoCo server via WebSocket
-  char error[1000] = "Could not load binary model";
-  if (
-    std::strlen(model_path.c_str()) > 4 &&
-    !std::strcmp(model_path.c_str() + std::strlen(model_path.c_str()) - 4, ".mjb"))
-  {
-    mujoco_model = mj_loadModel(model_path.c_str(), 0);
-  }
-  else
-  {
-    mujoco_model = mj_loadXML(model_path.c_str(), 0, error, 1000);
-  }
-  if (!mujoco_model)
-  {
-    RCLCPP_ERROR(node->get_logger(), "Failed to load model for joint mapping: %s", error);
-    return -1;
-  }
-
+  // No longer need to load MuJoCo model file - robot description comes from WebSocket server
   RCLCPP_INFO_STREAM(
-    node->get_logger(), "MuJoCo model loaded for joint/sensor mapping (not simulation)");
+    node->get_logger(), "Robot description will be obtained from WebSocket server");
 
-  // Create dummy data (not used for actual simulation)
-  mujoco_data = mj_makeData(mujoco_model);
-
-  // Initialize mujoco control (will connect to WebSocket)
-  auto mujoco_control = mujoco_ros2_control::MujocoRos2Control(node, mujoco_model, mujoco_data);
+  // Initialize mujoco control (will connect to WebSocket and get robot description)
+  auto mujoco_control = mujoco_ros2_control::MujocoRos2Control(node, nullptr, nullptr);
 
   mujoco_control.init();
   RCLCPP_INFO_STREAM(node->get_logger(), "MuJoCo ROS2 controller initialized in WebSocket mode!");
@@ -155,9 +130,7 @@ int main(int argc, const char **argv)
     std::this_thread::sleep_for(std::chrono::microseconds(100));
   }
 
-  // Cleanup - only delete model/data used for mapping
-  mj_deleteData(mujoco_data);
-  mj_deleteModel(mujoco_model);
+  // No cleanup needed - no MuJoCo model loaded
 
   RCLCPP_INFO_STREAM(
     node->get_logger(), "MuJoCo ROS2 control node (WebSocket mode) shutdown complete");

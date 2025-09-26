@@ -40,9 +40,15 @@ MujocoRos2Control::MujocoRos2Control(
       control_period_(rclcpp::Duration(1, 0)),
       last_update_sim_time_ros_(0, 0, RCL_ROS_TIME)
 {
-  // Object publisher removed since we're not running the MuJoCo engine
-  // The external MuJoCo server handles object tracking and publishing
-  RCLCPP_INFO(logger_, "MujocoRos2Control initialized for WebSocket mode");
+  // mujoco_model and mujoco_data can now be nullptr - robot description comes from WebSocket
+  if (mujoco_model == nullptr)
+  {
+    RCLCPP_INFO(logger_, "MujocoRos2Control initialized for WebSocket mode (no local MuJoCo model)");
+  }
+  else
+  {
+    RCLCPP_INFO(logger_, "MujocoRos2Control initialized for WebSocket mode (with local MuJoCo model for compatibility)");
+  }
 }
 
 MujocoRos2Control::~MujocoRos2Control()

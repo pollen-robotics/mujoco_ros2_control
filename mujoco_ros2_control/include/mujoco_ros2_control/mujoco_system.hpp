@@ -142,6 +142,7 @@ private:
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
 
+  // Keep for backwards compatibility, but will be deprecated
   mjModel *mj_model_;
   mjData *mj_data_;
 

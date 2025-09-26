@@ -31,9 +31,13 @@
 #include "rosgraph_msgs/msg/clock.hpp"
 #include "std_msgs/msg/string.hpp"
 
-#include "mujoco/mujoco.h"
-
 #include "mujoco_ros2_control/mujoco_system.hpp"
+
+// Forward declarations to avoid direct mujoco dependency
+struct mjModel_;
+struct mjData_;
+typedef struct mjModel_ mjModel;
+typedef struct mjData_ mjData;
 
 namespace mujoco_ros2_control
 {

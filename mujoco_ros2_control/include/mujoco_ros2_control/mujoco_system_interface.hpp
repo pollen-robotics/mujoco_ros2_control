@@ -22,9 +22,14 @@
 #define MUJOCO_ROS2_CONTROL__MUJOCO_SYSTEM_INTERFACE_HPP_
 
 #include "hardware_interface/system_interface.hpp"
-#include "mujoco/mujoco.h"
 #include "rclcpp/rclcpp.hpp"
 #include "urdf/model.h"
+
+// Forward declarations to avoid direct mujoco dependency
+struct mjModel_;
+struct mjData_;
+typedef struct mjModel_ mjModel;
+typedef struct mjData_ mjData;
 
 namespace mujoco_ros2_control
 {
@@ -33,6 +38,7 @@ using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface
 class MujocoSystemInterface : public hardware_interface::SystemInterface
 {
 public:
+  // Keep interface for backwards compatibility but mujoco_model and mujoco_data can be nullptr
   virtual bool init_sim(
     mjModel *mujoco_model, mjData *mujoco_data, const urdf::Model &urdf_model,
     const hardware_interface::HardwareInfo &hardware_info) = 0;
