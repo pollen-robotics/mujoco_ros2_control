@@ -149,9 +149,7 @@ public:
     return instance;
   }
 
-  // bool connect(const std::string &url = "ws://127.0.0.1:8765")
   bool connect(const std::string &url = "ws://host.docker.internal:8765")
-  // bool connect(const std::string &url = "ws://192.168.1.94:8765")
   {
     if (connected_)
     {
@@ -1110,9 +1108,22 @@ bool MujocoSystem::init_sim(
 
   // Connect to WebSocket (singleton ensures only one connection)
   auto &wsManager = WebSocketManager::getInstance();
-  if (!wsManager.connect())
+
+  // Get WebSocket URL from ROS parameter, with default fallback
+  std::string websocket_url = "ws://host.docker.internal:8765"; // Default value
+
+  // Get parameter from hardware info (forwarded from main node)
+  auto param_it = hardware_info.hardware_parameters.find("mujoco_websocket_url");
+  if (param_it != hardware_info.hardware_parameters.end()) {
+    websocket_url = param_it->second;
+    RCLCPP_INFO(logger_, "Using WebSocket URL from parameter: %s", websocket_url.c_str());
+  } else {
+    RCLCPP_INFO(logger_, "Using default WebSocket URL: %s (parameter 'mujoco_websocket_url' not found)", websocket_url.c_str());
+  }
+
+  if (!wsManager.connect(websocket_url))
   {
-    RCLCPP_ERROR(logger_, "Failed to connect to WebSocket server");
+    RCLCPP_ERROR(logger_, "Failed to connect to WebSocket server at %s", websocket_url.c_str());
     return false;
   }
 

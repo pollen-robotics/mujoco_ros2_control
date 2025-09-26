@@ -153,6 +153,17 @@ void MujocoRos2Control::init()
       continue;
     }
 
+    // Try to get WebSocket URL from node parameter and add it to hardware info
+    try {
+      std::string websocket_url = node_->get_parameter("mujoco_websocket_url").as_string();
+      // Create a mutable copy to modify hardware parameters
+      auto& mutable_hardware_params = const_cast<std::unordered_map<std::string, std::string>&>(hardware.hardware_parameters);
+      mutable_hardware_params["mujoco_websocket_url"] = websocket_url;
+      RCLCPP_INFO(logger_, "Forwarding WebSocket URL parameter to hardware: %s", websocket_url.c_str());
+    } catch (const std::exception& e) {
+      RCLCPP_DEBUG(logger_, "No mujoco_websocket_url parameter found on main node");
+    }
+
     urdf::Model urdf_model;
     urdf_model.initString(urdf_string);
     if (!mujoco_system->init_sim(mj_model_, mj_data_, urdf_model, hardware))
