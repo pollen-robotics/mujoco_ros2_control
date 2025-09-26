@@ -22,9 +22,10 @@
 #define MUJOCO_ROS2_CONTROL__MUJOCO_SYSTEM_HPP_
 
 #include <Eigen/Dense>
-#include <string>
-#include <vector>
 #include <nav_msgs/msg/odometry.hpp>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "control_toolbox/pid.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
@@ -43,6 +44,8 @@ class MujocoSystem : public MujocoSystemInterface
 {
 public:
   MujocoSystem();
+  ~MujocoSystem();
+
   std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
   std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
 
@@ -83,7 +86,7 @@ public:
     int mj_joint_type;
     int mj_pos_adr;
     int mj_vel_adr;
-      int mj_act_adr;
+    int mj_act_adr;
   };
 
   template <typename T>
@@ -128,7 +131,7 @@ private:
   std::vector<FTSensorData> ft_sensor_data_;
   std::vector<IMUSensorData> imu_sensor_data_;
 
-  // Ajout pour publier l’odométrie
+  // Ajout pour publier l'odométrie
   bool odom_initialized_ = false;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Node::SharedPtr node_;
@@ -139,12 +142,11 @@ private:
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
 
+  // Keep for backwards compatibility, but will be deprecated
   mjModel *mj_model_;
   mjData *mj_data_;
 
-  ~MujocoSystem();
-
-  rclcpp::Logger logger_;  // TODO(sangteak601): delete?
+  rclcpp::Logger logger_;
 };
 }  // namespace mujoco_ros2_control
 
